@@ -8,8 +8,10 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jszwec/s3fs"
 
@@ -40,16 +42,53 @@ func TestFS(t *testing.T) {
 	s3cl := newClient(t)
 
 	const (
-		bucket   = "test"
-		testFile = "text.txt"
+		bucket   = "test-s3fs"
+		testFile = "file.txt"
 	)
 
 	content := []byte("content")
 
+	allFiles := [...]string{
+		testFile,
+		"dir1/file1.txt",
+		"dir1/file2.txt",
+		"dir1/dir11/file.txt",
+		"dir2/file1.txt",
+	}
+
 	createBucket(t, s3cl, bucket)
-	writeFile(t, s3cl, bucket, testFile, content)
+	for _, f := range allFiles {
+		writeFile(t, s3cl, bucket, f, content)
+	}
+
+	t.Cleanup(func() {
+		out, err := s3cl.ListObjects(&s3.ListObjectsInput{
+			Bucket: aws.String(bucket),
+		})
+		if err != nil {
+			t.Fatal("failed to delete bucket:", err)
+		}
+
+		for _, o := range out.Contents {
+			_, err := s3cl.DeleteObject(&s3.DeleteObjectInput{
+				Bucket: aws.String(bucket),
+				Key:    o.Key,
+			})
+			if err != nil {
+				t.Error("failed to delete file:", err)
+			}
+		}
+	})
 
 	s3fs := s3fs.New(s3cl, bucket)
+
+	t.Run("testing fstest", func(t *testing.T) {
+		t.Skip("s3fs not fully implemented")
+
+		if err := fstest.TestFS(s3fs, allFiles[:]...); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	t.Run("readfile", func(t *testing.T) {
 		data, err := fs.ReadFile(s3fs, testFile)
@@ -108,6 +147,118 @@ func TestFS(t *testing.T) {
 			var pathErr *fs.PathError
 			if !errors.As(err, &pathErr) {
 				t.Fatal("expected err to be *PathError")
+			}
+		})
+	})
+
+	t.Run("readdir", func(t *testing.T) {
+		t.Run("success", func(t *testing.T) {
+			fixtures := []struct {
+				desc  string
+				path  string
+				names []string
+				modes []fs.FileMode
+				isDir []bool
+				size  []int
+			}{
+				{
+					desc:  "top level",
+					path:  ".",
+					names: []string{"dir1", "dir2", testFile},
+					modes: []fs.FileMode{fs.ModeDir, fs.ModeDir, 0},
+					isDir: []bool{true, true, false},
+					size:  []int{0, 0, len(content)},
+				},
+				{
+					desc:  "dir1",
+					path:  "dir1",
+					names: []string{"dir11", "file1.txt", "file2.txt"},
+					modes: []fs.FileMode{fs.ModeDir, 0, 0},
+					isDir: []bool{true, false, false},
+					size:  []int{0, len(content), len(content)},
+				},
+				{
+					desc:  "dir11",
+					path:  "dir1/dir11",
+					names: []string{"file.txt"},
+					modes: []fs.FileMode{0},
+					isDir: []bool{false},
+					size:  []int{len(content)},
+				},
+			}
+
+			for _, f := range fixtures {
+				t.Run(f.desc, func(t *testing.T) {
+					des, err := s3fs.ReadDir(f.path)
+					if err != nil {
+						t.Fatalf("expected err to be nil: %v", err)
+					}
+
+					var (
+						names []string
+						modes []fs.FileMode
+						isDir []bool
+						size  []int
+					)
+					for _, de := range des {
+						fi, err := de.Info()
+						if err != nil {
+							t.Fatal("expected nil; got ", err)
+						}
+						names = append(names, de.Name())
+						modes = append(modes, fi.Mode())
+						isDir = append(isDir, fi.IsDir())
+						size = append(size, int(fi.Size()))
+					}
+
+					for _, v := range []struct {
+						desc      string
+						want, got interface{}
+					}{
+						{"names", f.names, names},
+						{"modes", f.modes, modes},
+						{"isDir", f.isDir, isDir},
+						{"size", f.size, size},
+					} {
+						if !reflect.DeepEqual(v.want, v.got) {
+							t.Errorf("%s: expected %v; got %v", v.desc, v.want, v.got)
+						}
+					}
+				})
+			}
+		})
+
+		t.Run("error", func(t *testing.T) {
+			fixtures := []struct {
+				desc string
+				path string
+				err  fs.PathError
+			}{
+				{
+					desc: "invalid path",
+					path: "/",
+					err:  fs.PathError{Op: "readdir", Path: "/", Err: fs.ErrInvalid},
+				},
+				{
+					desc: "does not exist",
+					path: "notexist",
+					err:  fs.PathError{Op: "readdir", Path: "notexist", Err: fs.ErrNotExist},
+				},
+			}
+
+			for _, f := range fixtures {
+				t.Run(f.desc, func(t *testing.T) {
+					_, err := s3fs.ReadDir(f.path)
+
+					var perr *fs.PathError
+					if !errors.As(err, &perr) {
+						t.Fatalf("expected err to be *fs.PathError; got %[1]T: %[1]v", err)
+					}
+
+					if *perr != f.err {
+						t.Errorf("want %v; got %v", f.err, perr)
+					}
+				})
 			}
 		})
 	})
