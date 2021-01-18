@@ -150,18 +150,18 @@ func (d *dir) readNext() error {
 		})
 	}
 
-	dirs := d.dirs[:0]
-	for _, dir := range d.dirs {
+	var i int
+	for ; i < len(d.dirs); i++ {
 		i := sort.Search(len(d.buf), func(j int) bool {
-			return d.buf[j].Name() >= dir.Name()
+			return d.buf[j].Name() >= d.dirs[i].Name()
 		})
 
 		if i == len(d.buf) && !d.done {
 			break
 		}
-		d.buf = append(d.buf, dir)
 	}
-	d.dirs = dirs
+	d.buf = append(d.buf, d.dirs[:i]...)
+	d.dirs = d.dirs[i:]
 
 	sort.Slice(d.buf, func(i, j int) bool {
 		return d.buf[i].Name() < d.buf[j].Name()
