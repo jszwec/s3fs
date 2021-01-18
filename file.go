@@ -3,6 +3,7 @@ package s3fs
 import (
 	"io"
 	"io/fs"
+	"path"
 	"time"
 )
 
@@ -13,7 +14,7 @@ var (
 
 type file struct {
 	io.ReadCloser
-	stat func() (*fileInfo, error)
+	stat func() (fs.FileInfo, error)
 }
 
 func (f file) Stat() (fs.FileInfo, error) { return f.stat() }
@@ -25,7 +26,7 @@ type fileInfo struct {
 	modTime time.Time
 }
 
-func (fi fileInfo) Name() string       { return fi.name }
+func (fi fileInfo) Name() string       { return path.Base(fi.name) }
 func (fi fileInfo) Size() int64        { return fi.size }
 func (fi fileInfo) Mode() fs.FileMode  { return fi.mode }
 func (fi fileInfo) ModTime() time.Time { return fi.modTime }

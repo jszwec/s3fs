@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -83,8 +84,6 @@ func TestFS(t *testing.T) {
 	s3fs := s3fs.New(s3cl, bucket)
 
 	t.Run("testing fstest", func(t *testing.T) {
-		t.Skip("s3fs not fully implemented")
-
 		if err := fstest.TestFS(s3fs, allFiles[:]...); err != nil {
 			t.Fatal(err)
 		}
@@ -188,12 +187,8 @@ func TestFS(t *testing.T) {
 			}
 
 			for _, f := range fixtures {
-				t.Run(f.desc, func(t *testing.T) {
-					des, err := s3fs.ReadDir(f.path)
-					if err != nil {
-						t.Fatalf("expected err to be nil: %v", err)
-					}
-
+				f := f
+				test := func(t *testing.T, des []fs.DirEntry) {
 					var (
 						names []string
 						modes []fs.FileMode
@@ -224,6 +219,32 @@ func TestFS(t *testing.T) {
 							t.Errorf("%s: expected %v; got %v", v.desc, v.want, v.got)
 						}
 					}
+				}
+
+				t.Run("fs.ReadDir "+f.desc, func(t *testing.T) {
+					des, err := s3fs.ReadDir(f.path)
+					if err != nil {
+						t.Fatalf("expected err to be nil: %v", err)
+					}
+					test(t, des)
+				})
+
+				t.Run("file.ReadDir "+f.desc, func(t *testing.T) {
+					f, err := s3fs.Open(f.path)
+					if err != nil {
+						t.Fatalf("expected err to be nil: %v", err)
+					}
+
+					d, ok := f.(fs.ReadDirFile)
+					if !ok {
+						t.Fatal("expected file to be a directory")
+					}
+
+					des, err := d.ReadDir(-1)
+					if err != nil && !errors.Is(err, io.EOF) {
+						t.Fatalf("expected err to be nil: %v", err)
+					}
+					test(t, des)
 				})
 			}
 		})
@@ -244,6 +265,16 @@ func TestFS(t *testing.T) {
 					path: "notexist",
 					err:  fs.PathError{Op: "readdir", Path: "notexist", Err: fs.ErrNotExist},
 				},
+				{
+					desc: "does not exist",
+					path: "dir1/notexist",
+					err:  fs.PathError{Op: "readdir", Path: "dir1/notexist", Err: fs.ErrNotExist},
+				},
+				// { TODO
+				// 	desc: "readDir on a file",
+				// 	path: "dir1/file1.txt",
+				// 	err:  fs.PathError{Op: "readdir", Path: "dir1/file1.txt", Err: fs.ErrNotExist},
+				// },
 			}
 
 			for _, f := range fixtures {

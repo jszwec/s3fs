@@ -1,11 +1,9 @@
 package s3fs
 
 import (
+	"errors"
 	"io/fs"
 	"path"
-	"sort"
-	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -39,12 +37,16 @@ func New(cl s3iface.S3API, bucket string) *FS {
 //
 // Open currently doesn't support "." path.
 func (f *FS) Open(name string) (fs.File, error) {
-	if name == "." || !fs.ValidPath(name) {
+	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{
 			Op:   "open",
 			Path: name,
 			Err:  fs.ErrInvalid,
 		}
+	}
+
+	if name == "." {
+		return openDir(f.cl, f.bucket, name)
 	}
 
 	out, err := f.cl.GetObject(&s3.GetObjectInput{
@@ -53,7 +55,14 @@ func (f *FS) Open(name string) (fs.File, error) {
 	})
 
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
+		if isNotFoundErr(err) {
+			switch d, err := openDir(f.cl, f.bucket, name); {
+			case err == nil:
+				return d, nil
+			case !isNotFoundErr(err):
+				return nil, err
+			}
+
 			return nil, &fs.PathError{
 				Op:   "open",
 				Path: name,
@@ -68,7 +77,7 @@ func (f *FS) Open(name string) (fs.File, error) {
 		}
 	}
 
-	statFunc := func() (*fileInfo, error) {
+	statFunc := func() (fs.FileInfo, error) {
 		return stat(f.cl, f.bucket, name)
 	}
 
@@ -76,7 +85,7 @@ func (f *FS) Open(name string) (fs.File, error) {
 		// if we got all the information from GetObjectOutput
 		// then we can cache fileinfo instead of making
 		// another call in case Stat is called.
-		statFunc = func() (*fileInfo, error) {
+		statFunc = func() (fs.FileInfo, error) {
 			return &fileInfo{
 				name:    path.Base(name),
 				size:    *out.ContentLength,
@@ -98,15 +107,15 @@ func (f *FS) Open(name string) (fs.File, error) {
 //
 // Stat currently doesn't support "." path.
 func (f *FS) Stat(name string) (fs.FileInfo, error) {
-	if name == "." || !fs.ValidPath(name) {
+	fi, err := stat(f.cl, f.bucket, name)
+	if err != nil {
 		return nil, &fs.PathError{
 			Op:   "stat",
 			Path: name,
-			Err:  fs.ErrInvalid,
+			Err:  err,
 		}
 	}
-
-	return stat(f.cl, f.bucket, name)
+	return fi, nil
 }
 
 // ReadDir implements fs.ReadDirFS. It wraps S3 objects and Common Prefixes into
@@ -114,132 +123,113 @@ func (f *FS) Stat(name string) (fs.FileInfo, error) {
 //
 // It returns PathError immediately if fs.ValidPath returns false.
 func (f *FS) ReadDir(name string) ([]fs.DirEntry, error) {
-	if !fs.ValidPath(name) {
-		return nil, &fs.PathError{
-			Op:   "readdir",
-			Path: name,
-			Err:  fs.ErrInvalid,
-		}
-	}
-
-	name = strings.Trim(name, "/")
-
-	switch {
-	case name == ".":
-		name = ""
-	default:
-		name += "/"
-	}
-
-	prefixes, objects, err := listObjects(f.cl, f.bucket, name, -1)
+	fi, err := stat(f.cl, f.bucket, name)
 	if err != nil {
 		return nil, &fs.PathError{
 			Op:   "readdir",
-			Path: strings.TrimSuffix(name, "/"),
+			Path: name,
 			Err:  err,
 		}
 	}
 
-	if len(prefixes)+len(objects) == 0 {
+	d, ok := fi.(fs.ReadDirFile)
+	if !fi.IsDir() || !ok {
 		return nil, &fs.PathError{
 			Op:   "readdir",
-			Path: strings.TrimSuffix(name, "/"),
-			Err:  fs.ErrNotExist,
+			Path: name,
+			Err:  errors.New("not a dir"),
 		}
 	}
-
-	des := make([]fs.DirEntry, 0, len(prefixes)+len(objects))
-	for _, p := range prefixes {
-		des = append(des, dirEntry{
-			fileInfo: fileInfo{
-				name:    path.Base(*p.Prefix),
-				size:    0,
-				mode:    fs.ModeDir,
-				modTime: time.Time{},
-			},
-		})
-	}
-
-	for _, o := range objects {
-		des = append(des, dirEntry{
-			fileInfo: fileInfo{
-				name:    path.Base(*o.Key),
-				size:    *o.Size,
-				mode:    0,
-				modTime: *o.LastModified,
-			},
-		})
-	}
-
-	sort.Slice(des, func(i, j int) bool {
-		return des[i].Name() < des[j].Name()
-	})
-	return des, nil
+	return d.ReadDir(-1)
 }
 
-func stat(s3cl s3iface.S3API, bucket, name string) (*fileInfo, error) {
-	h, err := s3cl.HeadObject(&s3.HeadObjectInput{
-		Bucket: &bucket,
-		Key:    &name,
+func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
+	if !fs.ValidPath(name) {
+		return nil, fs.ErrInvalid
+	}
+
+	if name == "." {
+		return &dir{
+			s3cl:   s3cl,
+			bucket: bucket,
+			fileInfo: fileInfo{
+				name: ".",
+				mode: fs.ModeDir,
+			},
+		}, nil
+	}
+
+	out, err := s3cl.ListObjects(&s3.ListObjectsInput{
+		Bucket:    &bucket,
+		Delimiter: aws.String("/"),
+		Prefix:    &name,
+		MaxKeys:   aws.Int64(1),
 	})
-
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
-			return nil, &fs.PathError{
-				Op:   "stat",
-				Path: name,
-				Err:  fs.ErrNotExist,
-			}
-		}
-
-		return nil, &fs.PathError{
-			Op:   "stat",
-			Path: name,
-			Err:  err,
-		}
+		return nil, err
 	}
 
-	var size int64
-	if h.ContentLength != nil {
-		size = *h.ContentLength
+	if len(out.CommonPrefixes) != 0 && *out.CommonPrefixes[0].Prefix == name+"/" {
+		return &dir{
+			s3cl:   s3cl,
+			bucket: bucket,
+			fileInfo: fileInfo{
+				name: name,
+				mode: fs.ModeDir,
+			},
+		}, nil
 	}
 
-	var modTime time.Time
-	if h.LastModified != nil {
-		modTime = *h.LastModified
+	if len(out.Contents) != 0 &&
+		out.Contents[0].Key != nil &&
+		*out.Contents[0].Key == name {
+		return &fileInfo{
+			name:    name,
+			size:    *out.Contents[0].Size,
+			mode:    0,
+			modTime: *out.Contents[0].LastModified,
+		}, nil
 	}
 
-	return &fileInfo{
-		name:    path.Base(name),
-		size:    size,
-		modTime: modTime,
+	return nil, fs.ErrNotExist
+}
+
+var errNotFound = errors.New("not found")
+
+func openDir(s3cl s3iface.S3API, bucket, prefix string) (*dir, error) {
+	out, err := s3cl.ListObjects(&s3.ListObjectsInput{
+		Bucket:    &bucket,
+		Delimiter: aws.String("/"),
+		Prefix:    &prefix,
+		MaxKeys:   aws.Int64(0),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(out.CommonPrefixes) != 0 && *out.CommonPrefixes[0].Prefix != prefix+"/" {
+		return nil, errNotFound
+	}
+
+	return &dir{
+		s3cl:   s3cl,
+		bucket: bucket,
+		fileInfo: fileInfo{
+			name: prefix,
+			mode: fs.ModeDir,
+		},
 	}, nil
 }
 
-func listObjects(s3cl s3iface.S3API, bucket, prefix string, max int64) (prefixes []*s3.CommonPrefix, objects []*s3.Object, err error) {
-	var maxKeys *int64
-	if max > 1 {
-		maxKeys = aws.Int64(max)
+var notFoundCodes = map[string]struct{}{
+	s3.ErrCodeNoSuchKey: {},
+	"NotFound":          {},
+}
+
+func isNotFoundErr(err error) bool {
+	if aerr, ok := err.(awserr.Error); ok {
+		_, ok := notFoundCodes[aerr.Code()]
+		return ok
 	}
-
-	for marker := (*string)(nil); ; {
-		out, err := s3cl.ListObjects(&s3.ListObjectsInput{
-			Bucket:    &bucket,
-			Delimiter: aws.String("/"),
-			Prefix:    &prefix,
-			Marker:    marker,
-			MaxKeys:   maxKeys,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-
-		prefixes = append(prefixes, out.CommonPrefixes...)
-		objects = append(objects, out.Contents...)
-
-		if out.IsTruncated != nil && !(*out.IsTruncated) {
-			return prefixes, objects, nil
-		}
-		marker = out.Marker
-	}
+	return false
 }
