@@ -51,6 +51,7 @@ func TestFS(t *testing.T) {
 
 	allFiles := [...]string{
 		testFile,
+		"dir/a.txt",
 		"dir1/file1.txt",
 		"dir1/file2.txt",
 		"dir1/dir11/file.txt",
@@ -96,17 +97,67 @@ func TestFS(t *testing.T) {
 
 		t.Run("readfile", func(t *testing.T) {
 			t.Parallel()
-			data, err := fs.ReadFile(s3fs, testFile)
-			if err != nil {
-				t.Fatal(err)
-			}
 
-			if !bytes.Equal(data, []byte("content")) {
-				t.Errorf("expect: %s; got %s", data, []byte("content"))
-			}
+			t.Run("success", func(t *testing.T) {
+				data, err := fs.ReadFile(s3fs, testFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if !bytes.Equal(data, []byte("content")) {
+					t.Errorf("expect: %s; got %s", data, []byte("content"))
+				}
+			})
+
+			t.Run("error", func(t *testing.T) {
+				t.Run("invalid path", func(t *testing.T) {
+					_, err := fs.ReadFile(s3fs, "/")
+					if err == nil {
+						t.Fatal("expected error")
+					}
+
+					var pathErr *fs.PathError
+					if !errors.As(err, &pathErr) {
+						t.Fatal("expected err to be *PathError")
+					}
+
+					expected := fs.PathError{
+						Op:   "open",
+						Path: "/",
+						Err:  fs.ErrInvalid,
+					}
+					if *pathErr != expected {
+						t.Fatalf("want %v; got %v", expected, *pathErr)
+					}
+				})
+
+				t.Run("directory", func(t *testing.T) {
+					_, err := fs.ReadFile(s3fs, ".")
+					if err == nil {
+						t.Fatal("expected error")
+					}
+
+					var perr *fs.PathError
+					if !errors.As(err, &perr) {
+						t.Fatal("expected err to be *PathError")
+					}
+
+					if perr.Op != "read" {
+						t.Errorf("want %v; got %v", "read", perr.Op)
+					}
+
+					if perr.Path != "." {
+						t.Errorf("want %v; got %v", ".", perr.Path)
+					}
+
+					if perr.Err.Error() != "is a directory" {
+						t.Errorf("want %v; got %v", "is a directory", perr.Err.Error())
+					}
+				})
+			})
 		})
 
-		t.Run("stat", func(t *testing.T) {
+		t.Run("stat file", func(t *testing.T) {
 			t.Parallel()
 
 			test := func(t *testing.T, fi fs.FileInfo) {
@@ -149,12 +200,74 @@ func TestFS(t *testing.T) {
 				test(t, fi)
 			})
 
+			t.Run("invalid path", func(t *testing.T) {
+				_, err := s3fs.Stat("/")
+				var pathErr *fs.PathError
+				if !errors.As(err, &pathErr) {
+					t.Fatal("expected err to be *PathError")
+				}
+
+				expected := fs.PathError{
+					Op:   "stat",
+					Path: "/",
+					Err:  fs.ErrInvalid,
+				}
+				if *pathErr != expected {
+					t.Fatalf("want %v; got %v", expected, *pathErr)
+				}
+			})
+
 			t.Run("does not exist", func(t *testing.T) {
 				_, err := s3fs.Stat("not-existing")
 				var pathErr *fs.PathError
 				if !errors.As(err, &pathErr) {
 					t.Fatal("expected err to be *PathError")
 				}
+
+				expected := fs.PathError{
+					Op:   "stat",
+					Path: "not-existing",
+					Err:  fs.ErrNotExist,
+				}
+				if *pathErr != expected {
+					t.Fatalf("want %v; got %v", expected, *pathErr)
+				}
+			})
+		})
+
+		t.Run("stat dir", func(t *testing.T) {
+			t.Parallel()
+
+			test := func(t *testing.T, fi fs.FileInfo) {
+				t.Helper()
+
+				if !fi.IsDir() {
+					t.Error("expected true")
+				}
+
+				if fi.Mode() != fs.ModeDir {
+					t.Errorf("want %d; got %d", fs.ModeDir, fi.Mode())
+				}
+
+				if fi.Sys() != nil {
+					t.Error("expected Sys to be nil")
+				}
+			}
+
+			t.Run("top level", func(t *testing.T) {
+				fi, err := s3fs.Stat(".")
+				if err != nil {
+					t.Fatal("expected err to be nil")
+				}
+				test(t, fi)
+			})
+
+			t.Run("open z", func(t *testing.T) {
+				fi, err := s3fs.Stat("z")
+				if err != nil {
+					t.Fatal("expected err to be nil")
+				}
+				test(t, fi)
 			})
 		})
 
@@ -173,10 +286,10 @@ func TestFS(t *testing.T) {
 					{
 						desc:  "top level",
 						path:  ".",
-						names: []string{"dir1", "dir2", testFile, "x", "y.txt", "y2.txt", "y3.txt", "z"},
-						modes: []fs.FileMode{fs.ModeDir, fs.ModeDir, 0, fs.ModeDir, 0, 0, 0, fs.ModeDir},
-						isDir: []bool{true, true, false, true, false, false, false, true},
-						size:  []int{0, 0, len(content), 0, len(content), len(content), len(content), 0},
+						names: []string{"dir", "dir1", "dir2", testFile, "x", "y.txt", "y2.txt", "y3.txt", "z"},
+						modes: []fs.FileMode{fs.ModeDir, fs.ModeDir, fs.ModeDir, 0, fs.ModeDir, 0, 0, 0, fs.ModeDir},
+						isDir: []bool{true, true, true, false, true, false, false, false, true},
+						size:  []int{0, 0, 0, len(content), 0, len(content), len(content), len(content), 0},
 					},
 					{
 						desc:  "dir1",
