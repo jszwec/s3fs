@@ -280,11 +280,11 @@ func TestFS(t *testing.T) {
 						path: "dir1/notexist",
 						err:  fs.PathError{Op: "readdir", Path: "dir1/notexist", Err: fs.ErrNotExist},
 					},
-					// { TODO
-					// 	desc: "readDir on a file",
-					// 	path: "dir1/file1.txt",
-					// 	err:  fs.PathError{Op: "readdir", Path: "dir1/file1.txt", Err: fs.ErrNotExist},
-					// },
+					{
+						desc: "readDir on a file",
+						path: "dir1/file1.txt",
+						err:  fs.PathError{Op: "readdir", Path: "dir1/file1.txt", Err: errors.New("not a dir")},
+					},
 				}
 
 				for _, f := range fixtures {
@@ -296,8 +296,16 @@ func TestFS(t *testing.T) {
 							t.Fatalf("expected err to be *fs.PathError; got %[1]T: %[1]v", err)
 						}
 
-						if *perr != f.err {
-							t.Errorf("want %v; got %v", f.err, perr)
+						if perr.Op != f.err.Op {
+							t.Errorf("want %v; got %v", f.err.Op, perr.Op)
+						}
+
+						if perr.Path != f.err.Path {
+							t.Errorf("want %v; got %v", f.err.Path, perr.Path)
+						}
+
+						if perr.Err.Error() != f.err.Err.Error() {
+							t.Errorf("want %v; got %v", f.err.Err.Error(), perr.Err.Error())
 						}
 					})
 				}
