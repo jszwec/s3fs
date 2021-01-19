@@ -1,0 +1,26 @@
+name: Go
+
+on:
+  push:
+    branches: [ actions ]
+  pull_request:
+    branches: [ actions ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack
+        ports: ["4566:4566", "4571:4571"]
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.16beta1
+    
+    - name: Test
+      run: go test -v -endpoint='localstack:4566'
