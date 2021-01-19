@@ -109,7 +109,6 @@ func (d *dir) readNext() error {
 		Delimiter: aws.String("/"),
 		Prefix:    &name,
 		Marker:    d.marker,
-		MaxKeys:   aws.Int64(1),
 	})
 	if err != nil {
 		return err
