@@ -135,6 +135,10 @@ func (d *dir) readNext() error {
 		}
 	}
 
+	if d.buf == nil {
+		d.buf = []fs.DirEntry{}
+	}
+
 	d.marker = out.NextMarker
 	d.done = out.IsTruncated != nil && !(*out.IsTruncated)
 

@@ -64,27 +64,49 @@ func TestFS(t *testing.T) {
 	}
 
 	createBucket(t, s3cl, bucket)
+	cleanBucket(t, s3cl, bucket)
+
+	t.Run("list empty bucket", func(t *testing.T) {
+		fi, err := s3fs.New(s3cl, bucket).Open(".")
+		if err != nil {
+			t.Errorf("want err to be nil; got %v", err)
+		}
+
+		dir := fi.(fs.ReadDirFile)
+		fixtures := []struct {
+			desc string
+			n    int
+			err  error
+		}{
+			{"n > 0", 1, io.EOF},
+			{"n <= 0", -1, nil},
+		}
+
+		for _, f := range fixtures {
+			f := f
+			t.Run(f.desc, func(t *testing.T) {
+				des, err := dir.ReadDir(f.n)
+				if err != f.err {
+					t.Errorf("want err to be %v; got %v", f.err, err)
+				}
+
+				if des == nil {
+					t.Error("want des to not be a nil slice")
+				}
+
+				if len(des) > 0 {
+					t.Errorf("expected the directory to be empty; got %d elements", len(des))
+				}
+			})
+		}
+	})
+
 	for _, f := range allFiles {
 		writeFile(t, s3cl, bucket, f, content)
 	}
 
 	t.Cleanup(func() {
-		out, err := s3cl.ListObjects(&s3.ListObjectsInput{
-			Bucket: aws.String(bucket),
-		})
-		if err != nil {
-			t.Fatal("failed to delete bucket:", err)
-		}
-
-		for _, o := range out.Contents {
-			_, err := s3cl.DeleteObject(&s3.DeleteObjectInput{
-				Bucket: aws.String(bucket),
-				Key:    o.Key,
-			})
-			if err != nil {
-				t.Error("failed to delete file:", err)
-			}
-		}
+		cleanBucket(t, s3cl, bucket)
 	})
 
 	testFn := func(t *testing.T, s3fs *s3fs.FS) {
@@ -260,6 +282,10 @@ func TestFS(t *testing.T) {
 					t.Fatal("expected err to be nil")
 				}
 				test(t, fi)
+
+				if fi.Name() != "." {
+					t.Errorf("want name=%q; got %q", ".", fi.Name())
+				}
 			})
 
 			t.Run("open z", func(t *testing.T) {
@@ -493,6 +519,27 @@ func createBucket(t *testing.T, cl s3iface.S3API, bucket string) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func cleanBucket(t *testing.T, cl s3iface.S3API, bucket string) {
+	t.Helper()
+
+	out, err := cl.ListObjects(&s3.ListObjectsInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		t.Fatal("failed to delete bucket:", err)
+	}
+
+	for _, o := range out.Contents {
+		_, err := cl.DeleteObject(&s3.DeleteObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    o.Key,
+		})
+		if err != nil {
+			t.Error("failed to delete file:", err)
+		}
 	}
 }
 
