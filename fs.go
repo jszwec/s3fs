@@ -17,25 +17,27 @@ var (
 	_ fs.ReadDirFS = (*FS)(nil)
 )
 
+var errNotDir = errors.New("not a dir")
+
 // FS is a S3 filesystem implementation.
+//
+// S3 has a flat structure instead of a hierarchy. FS simulates directories
+// by using prefixes and delims ("/"). Because directories are simulated, ModTime
+// is always a default Time value (IsZero returns true).
 type FS struct {
 	cl     s3iface.S3API
 	bucket string
 }
 
-// New returns a new filesystem that works on the specified bucket.
-func New(cl s3iface.S3API, bucket string) *FS {
+// NewFS returns a new filesystem that works on the specified bucket.
+func NewFS(cl s3iface.S3API, bucket string) *FS {
 	return &FS{
 		cl:     cl,
 		bucket: bucket,
 	}
 }
 
-// Open opens an S3 file and wraps it into filesystem File.
-//
-// It returns PathError immediately if fs.ValidPath returns false.
-//
-// Open currently doesn't support "." path.
+// Open implements fs.FS.
 func (f *FS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{
@@ -59,7 +61,7 @@ func (f *FS) Open(name string) (fs.File, error) {
 			switch d, err := openDir(f.cl, f.bucket, name); {
 			case err == nil:
 				return d, nil
-			case !isNotFoundErr(err):
+			case !isNotFoundErr(err) && !errors.Is(err, errNotDir):
 				return nil, err
 			}
 
@@ -100,12 +102,7 @@ func (f *FS) Open(name string) (fs.File, error) {
 	}, nil
 }
 
-// Stat implements fs.StatFS. It wraps S3 object information
-// into fs.FileInfo.
-//
-// It returns PathError immediately if fs.ValidPath returns false.
-//
-// Stat currently doesn't support "." path.
+// Stat implements fs.StatFS.
 func (f *FS) Stat(name string) (fs.FileInfo, error) {
 	fi, err := stat(f.cl, f.bucket, name)
 	if err != nil {
@@ -118,26 +115,14 @@ func (f *FS) Stat(name string) (fs.FileInfo, error) {
 	return fi, nil
 }
 
-// ReadDir implements fs.ReadDirFS. It wraps S3 objects and Common Prefixes into
-// fs.DirEntry.
-//
-// It returns PathError immediately if fs.ValidPath returns false.
+// ReadDir implements fs.ReadDirFS.
 func (f *FS) ReadDir(name string) ([]fs.DirEntry, error) {
-	fi, err := stat(f.cl, f.bucket, name)
+	d, err := openDir(f.cl, f.bucket, name)
 	if err != nil {
 		return nil, &fs.PathError{
 			Op:   "readdir",
 			Path: name,
 			Err:  err,
-		}
-	}
-
-	d, ok := fi.(fs.ReadDirFile)
-	if !fi.IsDir() || !ok {
-		return nil, &fs.PathError{
-			Op:   "readdir",
-			Path: name,
-			Err:  errors.New("not a dir"),
 		}
 	}
 	return d.ReadDir(-1)
@@ -169,7 +154,9 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 		return nil, err
 	}
 
-	if len(out.CommonPrefixes) != 0 && *out.CommonPrefixes[0].Prefix == name+"/" {
+	if len(out.CommonPrefixes) > 0 &&
+		out.CommonPrefixes[0].Prefix != nil &&
+		*out.CommonPrefixes[0].Prefix == name+"/" {
 		return &dir{
 			s3cl:   s3cl,
 			bucket: bucket,
@@ -194,36 +181,21 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 	return nil, fs.ErrNotExist
 }
 
-var errNotFound = errors.New("not found")
-
-func openDir(s3cl s3iface.S3API, bucket, prefix string) (*dir, error) {
-	out, err := s3cl.ListObjects(&s3.ListObjectsInput{
-		Bucket:    &bucket,
-		Delimiter: aws.String("/"),
-		Prefix:    &prefix,
-		MaxKeys:   aws.Int64(0),
-	})
+func openDir(s3cl s3iface.S3API, bucket, name string) (fs.ReadDirFile, error) {
+	fi, err := stat(s3cl, bucket, name)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(out.CommonPrefixes) != 0 && *out.CommonPrefixes[0].Prefix != prefix+"/" {
-		return nil, errNotFound
+	if d, ok := fi.(fs.ReadDirFile); ok {
+		return d, nil
 	}
-
-	return &dir{
-		s3cl:   s3cl,
-		bucket: bucket,
-		fileInfo: fileInfo{
-			name: prefix,
-			mode: fs.ModeDir,
-		},
-	}, nil
+	return nil, errNotDir
 }
 
 var notFoundCodes = map[string]struct{}{
 	s3.ErrCodeNoSuchKey: {},
-	"NotFound":          {},
+	"NotFound":          {}, // localstack
 }
 
 func isNotFoundErr(err error) bool {

@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 )
 
+var _ fs.ReadDirFile = (*dir)(nil)
+
 type dir struct {
 	fileInfo
 	s3cl   s3iface.S3API
@@ -95,8 +97,7 @@ func (d *dir) readNext() error {
 		return io.EOF
 	}
 
-	name := strings.Trim(d.name, "/")
-
+	name := strings.TrimRight(d.name, "/")
 	switch {
 	case name == ".":
 		name = ""

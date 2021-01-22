@@ -67,7 +67,7 @@ func TestFS(t *testing.T) {
 	cleanBucket(t, s3cl, bucket)
 
 	t.Run("list empty bucket", func(t *testing.T) {
-		fi, err := s3fs.New(s3cl, bucket).Open(".")
+		fi, err := s3fs.NewFS(s3cl, bucket).Open(".")
 		if err != nil {
 			t.Errorf("want err to be nil; got %v", err)
 		}
@@ -456,10 +456,10 @@ func TestFS(t *testing.T) {
 		desc string
 		s3fs *s3fs.FS
 	}{
-		{desc: "standard", s3fs: s3fs.New(s3cl, bucket)},
-		{desc: "max keys = 1", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(1), S3API: s3cl}, bucket)},
-		{desc: "max keys = 2", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(2), S3API: s3cl}, bucket)},
-		{desc: "max keys = 3", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(3), S3API: s3cl}, bucket)},
+		{desc: "standard", s3fs: s3fs.NewFS(s3cl, bucket)},
+		{desc: "max keys = 1", s3fs: s3fs.NewFS(&client{MaxKeys: aws.Int64(1), S3API: s3cl}, bucket)},
+		{desc: "max keys = 2", s3fs: s3fs.NewFS(&client{MaxKeys: aws.Int64(2), S3API: s3cl}, bucket)},
+		{desc: "max keys = 3", s3fs: s3fs.NewFS(&client{MaxKeys: aws.Int64(3), S3API: s3cl}, bucket)},
 	}
 
 	for _, f := range fixtures {
