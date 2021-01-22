@@ -1,3 +1,5 @@
+// Package s3fs provides a S3 implementation for Go1.16 filesystem interface.
+//
 package s3fs
 
 import (
