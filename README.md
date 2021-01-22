@@ -1,4 +1,4 @@
-# s3fs
+# s3fs [![Go Reference](https://pkg.go.dev/badge/github.com/jszwec/s3fs.svg)](https://pkg.go.dev/github.com/jszwec/s3fs) ![Go](https://github.com/jszwec/s3fs/workflows/Go/badge.svg?branch=main)
 
 Package s3fs provides a S3 implementation for Go1.16 [filesystem](https://tip.golang.org/pkg/io/fs/#FS) interface.
 
