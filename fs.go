@@ -157,6 +157,7 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 	}
 
 	if len(out.CommonPrefixes) > 0 &&
+		out.CommonPrefixes[0] != nil &&
 		out.CommonPrefixes[0].Prefix != nil &&
 		*out.CommonPrefixes[0].Prefix == name+"/" {
 		return &dir{
@@ -170,13 +171,14 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 	}
 
 	if len(out.Contents) != 0 &&
+		out.Contents[0] != nil &&
 		out.Contents[0].Key != nil &&
 		*out.Contents[0].Key == name {
 		return &fileInfo{
 			name:    name,
-			size:    *out.Contents[0].Size,
+			size:    derefInt64(out.Contents[0].Size),
 			mode:    0,
-			modTime: *out.Contents[0].LastModified,
+			modTime: derefTime(out.Contents[0].LastModified),
 		}, nil
 	}
 

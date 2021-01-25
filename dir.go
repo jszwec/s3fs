@@ -125,6 +125,10 @@ func (d *dir) readNext() error {
 
 	if d.dirs == nil {
 		for _, p := range out.CommonPrefixes {
+			if p == nil || p.Prefix == nil {
+				continue
+			}
+
 			d.dirs = append(d.dirs, dirEntry{
 				fileInfo: fileInfo{
 					name:    path.Base(*p.Prefix),
@@ -144,12 +148,16 @@ func (d *dir) readNext() error {
 	d.done = out.IsTruncated != nil && !(*out.IsTruncated)
 
 	for _, o := range out.Contents {
+		if o == nil || o.Key == nil {
+			continue
+		}
+
 		d.buf = append(d.buf, dirEntry{
 			fileInfo: fileInfo{
 				name:    path.Base(*o.Key),
-				size:    *o.Size,
+				size:    derefInt64(o.Size),
 				mode:    0,
-				modTime: *o.LastModified,
+				modTime: derefTime(o.LastModified),
 			},
 		})
 	}
@@ -189,4 +197,18 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func derefInt64(n *int64) int64 {
+	if n != nil {
+		return *n
+	}
+	return 0
+}
+
+func derefTime(t *time.Time) time.Time {
+	if t != nil {
+		return *t
+	}
+	return time.Time{}
 }
