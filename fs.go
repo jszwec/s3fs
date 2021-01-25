@@ -14,33 +14,33 @@ import (
 )
 
 var (
-	_ fs.FS        = (*FS)(nil)
-	_ fs.StatFS    = (*FS)(nil)
-	_ fs.ReadDirFS = (*FS)(nil)
+	_ fs.FS        = (*S3FS)(nil)
+	_ fs.StatFS    = (*S3FS)(nil)
+	_ fs.ReadDirFS = (*S3FS)(nil)
 )
 
 var errNotDir = errors.New("not a dir")
 
-// FS is a S3 filesystem implementation.
+// S3FS is a S3 filesystem implementation.
 //
-// S3 has a flat structure instead of a hierarchy. FS simulates directories
+// S3 has a flat structure instead of a hierarchy. S3FS simulates directories
 // by using prefixes and delims ("/"). Because directories are simulated, ModTime
 // is always a default Time value (IsZero returns true).
-type FS struct {
+type S3FS struct {
 	cl     s3iface.S3API
 	bucket string
 }
 
-// NewFS returns a new filesystem that works on the specified bucket.
-func NewFS(cl s3iface.S3API, bucket string) *FS {
-	return &FS{
+// New returns a new filesystem that works on the specified bucket.
+func New(cl s3iface.S3API, bucket string) *S3FS {
+	return &S3FS{
 		cl:     cl,
 		bucket: bucket,
 	}
 }
 
 // Open implements fs.FS.
-func (f *FS) Open(name string) (fs.File, error) {
+func (f *S3FS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{
 			Op:   "open",
@@ -105,7 +105,7 @@ func (f *FS) Open(name string) (fs.File, error) {
 }
 
 // Stat implements fs.StatFS.
-func (f *FS) Stat(name string) (fs.FileInfo, error) {
+func (f *S3FS) Stat(name string) (fs.FileInfo, error) {
 	fi, err := stat(f.cl, f.bucket, name)
 	if err != nil {
 		return nil, &fs.PathError{
@@ -118,7 +118,7 @@ func (f *FS) Stat(name string) (fs.FileInfo, error) {
 }
 
 // ReadDir implements fs.ReadDirFS.
-func (f *FS) ReadDir(name string) ([]fs.DirEntry, error) {
+func (f *S3FS) ReadDir(name string) ([]fs.DirEntry, error) {
 	d, err := openDir(f.cl, f.bucket, name)
 	if err != nil {
 		return nil, &fs.PathError{
