@@ -15,7 +15,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-s3fs := s3fs.NewFS(s3.New(s), bucket)
+s3fs := s3fs.New(s3.New(s), bucket)
 
 // print out all files in s3 bucket.
 _ = fs.WalkDir(s3fs, ".", func(path string, d fs.DirEntry, err error) error {
