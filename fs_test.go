@@ -29,9 +29,9 @@ var (
 )
 
 var (
-	accessKeyID = envDefault("AWS_ACCESS_KEY_ID", "1")
-	secretKey   = envDefault("AWS_SECRET_ACCESS_KEY", "1")
-	region      = envDefault("AWS_REGION", "us-east-1")
+	accessKeyID = envDefault("S3FS_TEST_AWS_ACCESS_KEY_ID", "1")
+	secretKey   = envDefault("S3FS_TEST_AWS_SECRET_ACCESS_KEY", "1")
+	region      = envDefault("S3FS_TEST_AWS_REGION", "us-east-1")
 )
 
 func TestMain(m *testing.M) {
