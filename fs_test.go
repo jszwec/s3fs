@@ -25,8 +25,9 @@ import (
 )
 
 var (
-	endpoint = flag.String("endpoint", "localhost:4566", "s3 endpoint")
-	bucket   = flag.String("bucket", "test-github.com-jszwec-s3fs", "bucket name")
+	endpoint   = flag.String("endpoint", "localhost:4566", "s3 endpoint")
+	bucket     = flag.String("bucket", "test-github.com-jszwec-s3fs", "bucket name")
+	skipVerify = flag.Bool("skip-verify", true, "http insecure skip verify")
 )
 
 var (
@@ -571,7 +572,7 @@ func newClient(t *testing.T) s3iface.S3API {
 	cl := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
+				InsecureSkipVerify: *skipVerify,
 			},
 		},
 	}
