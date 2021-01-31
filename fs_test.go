@@ -452,6 +452,98 @@ func TestFS(t *testing.T) {
 				}
 			})
 		})
+
+		t.Run("subfs", func(t *testing.T) {
+			t.Run("existing", func(t *testing.T) {
+				fsys, err := fs.Sub(s3fs, "dir1/dir11")
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				t.Run("fs.Stat", func(t *testing.T) {
+					fi, err := fs.Stat(fsys, "file.txt")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if fi.Name() != "file.txt" {
+						t.Errorf("expected file.txt got %s", fi.Name())
+					}
+
+					t.Run("not exist", func(t *testing.T) {
+						_, err = fs.Stat(fsys, "not-exist")
+						var perr *fs.PathError
+						if !errors.As(err, &perr) {
+							t.Fatalf("expected err to be PathError: got %#v", err)
+						}
+
+						// currently we don't implement fs.SubFS.
+						// fs.Sub calls open instead of Stat.
+						if perr.Op != "open" {
+							t.Errorf("expected op to be open; got %s", perr.Op)
+						}
+					})
+				})
+
+				t.Run("fs.ReadDir", func(t *testing.T) {
+					files, err := fs.ReadDir(fsys, ".")
+					if err != nil {
+						t.Fatal(err)
+					}
+
+					if len(files) != 1 {
+						t.Fatalf("expected 1 file in dir1/dir11; got %d", len(files))
+					}
+					if files[0].Name() != "file.txt" {
+						t.Errorf("expected file to be file.txt; got %s", files[0].Name())
+					}
+
+					t.Run("not exist", func(t *testing.T) {
+						_, err := fs.ReadDir(fsys, "not-exist")
+						var perr *fs.PathError
+						if !errors.As(err, &perr) {
+							t.Fatalf("expected err to be PathError: got %#v", err)
+						}
+
+						if perr.Op != "readdir" {
+							t.Errorf("expected op to be readdir; got %s", perr.Op)
+						}
+					})
+				})
+
+				t.Run("open", func(t *testing.T) {
+					f, err := fsys.Open(".")
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer f.Close()
+
+					dir, ok := f.(fs.ReadDirFile)
+					if !ok {
+						t.Fatal("expected file to be a directory")
+					}
+
+					fi, err := dir.Stat()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if fi.Name() != "dir11" {
+						t.Errorf("expected dir name to bedir11; got %s", fi.Name())
+					}
+
+					files, err := dir.ReadDir(-1)
+					if err != nil {
+						t.Fatal(err)
+					}
+
+					if len(files) != 1 {
+						t.Fatalf("expected 1 file in dir1/dir11; got %d", len(files))
+					}
+					if files[0].Name() != "file.txt" {
+						t.Errorf("expected file to be file.txt; got %s", files[0].Name())
+					}
+				})
+			})
+		})
 	}
 
 	fixtures := []struct {

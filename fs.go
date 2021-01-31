@@ -63,7 +63,7 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 			switch d, err := openDir(f.cl, f.bucket, name); {
 			case err == nil:
 				return d, nil
-			case !isNotFoundErr(err) && !errors.Is(err, errNotDir):
+			case !isNotFoundErr(err) && !errors.Is(err, errNotDir) && !errors.Is(err, fs.ErrNotExist):
 				return nil, err
 			}
 
