@@ -11,12 +11,15 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jszwec/s3fs"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -106,6 +109,10 @@ func TestFS(t *testing.T) {
 
 	t.Cleanup(func() {
 		cleanBucket(t, s3cl, *bucket)
+
+		t.Log("test stats:")
+		t.Log("ListObjects calls:", atomic.LoadInt64(&listC))
+		t.Log("GetObject calls:", atomic.LoadInt64(&getC))
 	})
 
 	testFn := func(t *testing.T, s3fs *s3fs.S3FS) {
@@ -589,7 +596,7 @@ func newClient(t *testing.T) s3iface.S3API {
 		t.Fatal(err)
 	}
 
-	return s3.New(s)
+	return &modTimeTruncateClient{&metricClient{s3.New(s)}}
 }
 
 func writeFile(t *testing.T, cl s3iface.S3API, bucket, name string, data []byte) {
@@ -613,6 +620,9 @@ func createBucket(t *testing.T, cl s3iface.S3API, bucket string) {
 		Bucket: &bucket,
 	})
 	if err != nil {
+		if awserr, ok := err.(awserr.Error); ok && awserr.Code() == s3.ErrCodeBucketAlreadyOwnedByYou {
+			return
+		}
 		t.Fatal(err)
 	}
 }
@@ -655,4 +665,44 @@ func (c *client) ListObjects(in *s3.ListObjectsInput) (*s3.ListObjectsOutput, er
 		in.MaxKeys = c.MaxKeys
 	}
 	return c.S3API.ListObjects(in)
+}
+
+type modTimeTruncateClient struct {
+	s3iface.S3API
+}
+
+// Minio returns modTime that includes microseconds if data comes from ListObjects
+// while data coming from GetObject's modTimes are accurate down to seconds.
+// To make this test pass while using Minio we build this client that truncates
+// modTimes to Second.
+func (c *modTimeTruncateClient) ListObjects(in *s3.ListObjectsInput) (*s3.ListObjectsOutput, error) {
+	out, err := c.S3API.ListObjects(in)
+	if err != nil {
+		return out, err
+	}
+
+	for _, o := range out.Contents {
+		o.LastModified = aws.Time(o.LastModified.Truncate(time.Second))
+	}
+	return out, err
+}
+
+var (
+	// global metrics for this test.
+	listC int64
+	getC  int64
+)
+
+type metricClient struct {
+	s3iface.S3API
+}
+
+func (c *metricClient) ListObjects(in *s3.ListObjectsInput) (*s3.ListObjectsOutput, error) {
+	atomic.AddInt64(&listC, 1)
+	return c.S3API.ListObjects(in)
+}
+
+func (c *metricClient) GetObject(in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	atomic.AddInt64(&getC, 1)
+	return c.S3API.GetObject(in)
 }
