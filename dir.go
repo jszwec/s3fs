@@ -16,6 +16,11 @@ import (
 
 var _ fs.ReadDirFile = (*dir)(nil)
 
+type usedDirEntry struct {
+	fs.DirEntry
+	used bool
+}
+
 type dir struct {
 	fileInfo
 	s3cl   s3iface.S3API
@@ -23,7 +28,7 @@ type dir struct {
 	marker *string
 	done   bool
 	buf    []fs.DirEntry
-	dirs   []fs.DirEntry
+	dirs   map[string]usedDirEntry
 }
 
 func (d *dir) Stat() (fs.FileInfo, error) {
@@ -124,19 +129,28 @@ func (d *dir) readNext() error {
 	}
 
 	if d.dirs == nil {
-		for _, p := range out.CommonPrefixes {
-			if p == nil || p.Prefix == nil {
-				continue
-			}
+		d.dirs = make(map[string]usedDirEntry)
+	}
 
-			d.dirs = append(d.dirs, dirEntry{
+	for _, p := range out.CommonPrefixes {
+		if p == nil || p.Prefix == nil {
+			continue
+		}
+
+		base := path.Base(*p.Prefix)
+		if _, ok := d.dirs[base]; ok {
+			continue
+		}
+
+		d.dirs[base] = usedDirEntry{
+			DirEntry: &dirEntry{
 				fileInfo: fileInfo{
-					name:    path.Base(*p.Prefix),
+					name:    base,
 					size:    0,
 					mode:    fs.ModeDir,
 					modTime: time.Time{},
 				},
-			})
+			},
 		}
 	}
 
@@ -162,18 +176,25 @@ func (d *dir) readNext() error {
 		})
 	}
 
+	dirs := dirSlice(d.dirs)
+
 	var i int
-	for ; i < len(d.dirs); i++ {
+	for ; i < len(dirs); i++ {
 		i := sort.Search(len(d.buf), func(j int) bool {
-			return d.buf[j].Name() >= d.dirs[i].Name()
+			return d.buf[j].Name() >= dirs[i].Name()
 		})
 
 		if i == len(d.buf) && !d.done {
 			break
 		}
 	}
-	d.buf = append(d.buf, d.dirs[:i]...)
-	d.dirs = d.dirs[i:]
+	d.buf = append(d.buf, dirs[:i]...)
+
+	for _, dir := range dirs[:i] {
+		de := d.dirs[dir.Name()]
+		de.used = true
+		d.dirs[dir.Name()] = de
+	}
 
 	sort.Slice(d.buf, func(i, j int) bool {
 		return d.buf[i].Name() < d.buf[j].Name()
@@ -191,6 +212,21 @@ type dirEntry struct {
 
 func (de dirEntry) Type() fs.FileMode          { return de.Mode().Type() }
 func (de dirEntry) Info() (fs.FileInfo, error) { return de.fileInfo, nil }
+
+func dirSlice(m map[string]usedDirEntry) []fs.DirEntry {
+	out := make([]fs.DirEntry, 0, len(m))
+	for _, de := range m {
+		if de.used {
+			continue
+		}
+		out = append(out, de.DirEntry)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name() < out[j].Name()
+	})
+	return out
+}
 
 func min(a, b int) int {
 	if a < b {

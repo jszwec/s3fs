@@ -26,6 +26,7 @@ import (
 
 var (
 	endpoint = flag.String("endpoint", "localhost:4566", "s3 endpoint")
+	bucket   = flag.String("bucket", "test-github.com-jszwec-s3fs", "bucket name")
 )
 
 var (
@@ -42,10 +43,7 @@ func TestMain(m *testing.M) {
 func TestFS(t *testing.T) {
 	s3cl := newClient(t)
 
-	const (
-		bucket   = "test-github.com-jszwec-s3fs"
-		testFile = "file.txt"
-	)
+	const testFile = "file.txt"
 
 	content := []byte("content")
 
@@ -63,11 +61,11 @@ func TestFS(t *testing.T) {
 		"z/z/file1.txt",
 	}
 
-	createBucket(t, s3cl, bucket)
-	cleanBucket(t, s3cl, bucket)
+	createBucket(t, s3cl, *bucket)
+	cleanBucket(t, s3cl, *bucket)
 
 	t.Run("list empty bucket", func(t *testing.T) {
-		fi, err := s3fs.New(s3cl, bucket).Open(".")
+		fi, err := s3fs.New(s3cl, *bucket).Open(".")
 		if err != nil {
 			t.Errorf("want err to be nil; got %v", err)
 		}
@@ -102,15 +100,19 @@ func TestFS(t *testing.T) {
 	})
 
 	for _, f := range allFiles {
-		writeFile(t, s3cl, bucket, f, content)
+		writeFile(t, s3cl, *bucket, f, content)
 	}
 
 	t.Cleanup(func() {
-		cleanBucket(t, s3cl, bucket)
+		cleanBucket(t, s3cl, *bucket)
 	})
 
 	testFn := func(t *testing.T, s3fs *s3fs.S3FS) {
 		t.Run("testing fstest", func(t *testing.T) {
+			if testing.Short() {
+				t.Skip("short test enabled")
+			}
+
 			t.Parallel()
 			if err := fstest.TestFS(s3fs, allFiles[:]...); err != nil {
 				t.Fatal(err)
@@ -456,10 +458,10 @@ func TestFS(t *testing.T) {
 		desc string
 		s3fs *s3fs.S3FS
 	}{
-		{desc: "standard", s3fs: s3fs.New(s3cl, bucket)},
-		{desc: "max keys = 1", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(1), S3API: s3cl}, bucket)},
-		{desc: "max keys = 2", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(2), S3API: s3cl}, bucket)},
-		{desc: "max keys = 3", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(3), S3API: s3cl}, bucket)},
+		{desc: "standard", s3fs: s3fs.New(s3cl, *bucket)},
+		{desc: "max keys = 1", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(1), S3API: s3cl}, *bucket)},
+		{desc: "max keys = 2", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(2), S3API: s3cl}, *bucket)},
+		{desc: "max keys = 3", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(3), S3API: s3cl}, *bucket)},
 	}
 
 	for _, f := range fixtures {
@@ -547,7 +549,7 @@ func envDefault(env, def string) string {
 	if os.Getenv(env) == "" {
 		return def
 	}
-	return env
+	return os.Getenv(env)
 }
 
 type client struct {
