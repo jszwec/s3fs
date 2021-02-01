@@ -7,11 +7,10 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  localstack:
     runs-on: ubuntu-latest
-    
     services:
-      localstack:
+      minio:
         image: localstack/localstack
         ports:
           - "4566:4566"
@@ -33,3 +32,30 @@ jobs:
 
     - name: Test
       run: go test -v -endpoint='localhost:4566' -cover
+
+  minio:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        stable: false
+        go-version: 1.16.0-rc1
+    
+    - name: Test
+      env:
+          SERVER_ENDPOINT: localhost:9000
+          ACCESS_KEY: minioadmin
+          SECRET_KEY: minioadmin
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin
+          S3FS_TEST_AWS_ACCESS_KEY_ID: minioadmin
+          S3FS_TEST_AWS_SECRET_ACCESS_KEY: minioadmin
+      run: |
+          wget -O /tmp/minio -q https://dl.minio.io/server/minio/release/linux-amd64/minio
+          chmod +x /tmp/minio
+          /tmp/minio server /tmp/data &
+          go test -v -endpoint='http://localhost:9000' -cover
