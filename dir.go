@@ -16,11 +16,6 @@ import (
 
 var _ fs.ReadDirFile = (*dir)(nil)
 
-type usedDirEntry struct {
-	fs.DirEntry
-	used bool
-}
-
 type dir struct {
 	fileInfo
 	s3cl   s3iface.S3API
@@ -28,7 +23,7 @@ type dir struct {
 	marker *string
 	done   bool
 	buf    []fs.DirEntry
-	dirs   map[string]usedDirEntry
+	dirs   map[dirEntry]bool
 }
 
 func (d *dir) Stat() (fs.FileInfo, error) {
@@ -74,7 +69,7 @@ loop:
 	}
 
 	offset := min(n, len(d.buf))
-	des, d.buf = d.buf[:offset], d.buf[offset:]
+	des, d.buf = d.buf[:offset:offset], d.buf[offset:]
 
 	if d.done && len(d.buf) == 0 {
 		err = io.EOF
@@ -128,8 +123,11 @@ func (d *dir) readNext() error {
 		}
 	}
 
+	d.marker = out.NextMarker
+	d.done = out.IsTruncated != nil && !(*out.IsTruncated)
+
 	if d.dirs == nil {
-		d.dirs = make(map[string]usedDirEntry)
+		d.dirs = make(map[dirEntry]bool)
 	}
 
 	for _, p := range out.CommonPrefixes {
@@ -137,29 +135,17 @@ func (d *dir) readNext() error {
 			continue
 		}
 
-		base := path.Base(*p.Prefix)
-		if _, ok := d.dirs[base]; ok {
-			continue
-		}
-
-		d.dirs[base] = usedDirEntry{
-			DirEntry: &dirEntry{
-				fileInfo: fileInfo{
-					name:    base,
-					size:    0,
-					mode:    fs.ModeDir,
-					modTime: time.Time{},
-				},
+		de := dirEntry{
+			fileInfo: fileInfo{
+				name: path.Base(*p.Prefix),
+				mode: fs.ModeDir,
 			},
 		}
-	}
 
-	if d.buf == nil {
-		d.buf = []fs.DirEntry{}
+		if _, ok := d.dirs[de]; !ok {
+			d.dirs[de] = false
+		}
 	}
-
-	d.marker = out.NextMarker
-	d.done = out.IsTruncated != nil && !(*out.IsTruncated)
 
 	for _, o := range out.Contents {
 		if o == nil || o.Key == nil {
@@ -170,40 +156,48 @@ func (d *dir) readNext() error {
 			fileInfo: fileInfo{
 				name:    path.Base(*o.Key),
 				size:    derefInt64(o.Size),
-				mode:    0,
 				modTime: derefTime(o.LastModified),
 			},
 		})
 	}
 
-	dirs := dirSlice(d.dirs)
-
-	var i int
-	for ; i < len(dirs); i++ {
-		i := sort.Search(len(d.buf), func(j int) bool {
-			return d.buf[j].Name() >= dirs[i].Name()
-		})
-
-		if i == len(d.buf) && !d.done {
-			break
-		}
-	}
-	d.buf = append(d.buf, dirs[:i]...)
-
-	for _, dir := range dirs[:i] {
-		de := d.dirs[dir.Name()]
-		de.used = true
-		d.dirs[dir.Name()] = de
-	}
-
-	sort.Slice(d.buf, func(i, j int) bool {
-		return d.buf[i].Name() < d.buf[j].Name()
-	})
+	d.mergeDirFiles()
 
 	if d.done {
 		return io.EOF
 	}
 	return nil
+}
+
+func (d *dir) mergeDirFiles() {
+	if d.buf == nil {
+		// according to fs docs ReadDir should never return nil slice,
+		// so we set it here.
+		d.buf = []fs.DirEntry{}
+	}
+
+	// we need a current len for sort.Search that doesn't change; otherwise
+	// we could not append to the same slice.
+	l := len(d.buf)
+	for de, used := range d.dirs {
+		if used {
+			continue
+		}
+
+		i := sort.Search(l, func(i int) bool {
+			return d.buf[i].Name() >= de.Name()
+		})
+
+		if i == l && !d.done {
+			continue
+		}
+		d.buf = append(d.buf, de)
+		d.dirs[de] = true
+	}
+
+	sort.Slice(d.buf, func(i, j int) bool {
+		return d.buf[i].Name() < d.buf[j].Name()
+	})
 }
 
 type dirEntry struct {
@@ -212,21 +206,6 @@ type dirEntry struct {
 
 func (de dirEntry) Type() fs.FileMode          { return de.Mode().Type() }
 func (de dirEntry) Info() (fs.FileInfo, error) { return de.fileInfo, nil }
-
-func dirSlice(m map[string]usedDirEntry) []fs.DirEntry {
-	out := make([]fs.DirEntry, 0, len(m))
-	for _, de := range m {
-		if de.used {
-			continue
-		}
-		out = append(out, de.DirEntry)
-	}
-
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Name() < out[j].Name()
-	})
-	return out
-}
 
 func min(a, b int) int {
 	if a < b {
