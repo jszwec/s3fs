@@ -5,7 +5,7 @@ Package s3fs provides a S3 implementation for Go1.16 [filesystem](https://tip.go
 Since S3 is a flat structure, s3fs simulates directories by using
 prefixes and "/" delim. ModTime on directories is always zero value.
 
-The implementation wraps [aws sdk go](github.com/aws/aws-sdk-go) s3 client.
+The implementation wraps [aws sdk go](https://github.com/aws/aws-sdk-go) s3 client.
 
 ```go
 const bucket = "my-bucket"
