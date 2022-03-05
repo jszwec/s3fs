@@ -63,6 +63,8 @@ func TestFS(t *testing.T) {
 		"y2.txt",
 		"y3.txt",
 		"z/z/file1.txt",
+		"a.txt",
+		"a/b.txt",
 	}
 
 	createBucket(t, s3cl, *bucket)
@@ -322,10 +324,10 @@ func TestFS(t *testing.T) {
 					{
 						desc:  "top level",
 						path:  ".",
-						names: []string{"dir", "dir1", "dir2", testFile, "x", "y.txt", "y2.txt", "y3.txt", "z"},
-						modes: []fs.FileMode{fs.ModeDir, fs.ModeDir, fs.ModeDir, 0, fs.ModeDir, 0, 0, 0, fs.ModeDir},
-						isDir: []bool{true, true, true, false, true, false, false, false, true},
-						size:  []int{0, 0, 0, len(content), 0, len(content), len(content), len(content), 0},
+						names: []string{"a", "a.txt", "dir", "dir1", "dir2", testFile, "x", "y.txt", "y2.txt", "y3.txt", "z"},
+						modes: []fs.FileMode{fs.ModeDir, 0, fs.ModeDir, fs.ModeDir, fs.ModeDir, 0, fs.ModeDir, 0, 0, 0, fs.ModeDir},
+						isDir: []bool{true, false, true, true, true, false, true, false, false, false, true},
+						size:  []int{0, len(content), 0, 0, 0, len(content), 0, len(content), len(content), len(content), 0},
 					},
 					{
 						desc:  "dir1",
