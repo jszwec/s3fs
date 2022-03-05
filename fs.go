@@ -146,20 +146,33 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 		}, nil
 	}
 
-	out, err := s3cl.ListObjects(&s3.ListObjectsInput{
+	head, err := s3cl.HeadObject(&s3.HeadObjectInput{
+		Bucket: &bucket,
+		Key:    aws.String(name),
+	})
+	if err != nil {
+		if !isNotFoundErr(err) {
+			return nil, err
+		}
+	} else {
+		return &fileInfo{
+			name:    name,
+			size:    derefInt64(head.ContentLength),
+			mode:    0,
+			modTime: derefTime(head.LastModified),
+		}, nil
+	}
+
+	out, err := s3cl.ListObjectsV2(&s3.ListObjectsV2Input{
 		Bucket:    &bucket,
 		Delimiter: aws.String("/"),
-		Prefix:    &name,
+		Prefix:    aws.String(name + "/"),
 		MaxKeys:   aws.Int64(1),
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	if len(out.CommonPrefixes) > 0 &&
-		out.CommonPrefixes[0] != nil &&
-		out.CommonPrefixes[0].Prefix != nil &&
-		*out.CommonPrefixes[0].Prefix == name+"/" {
+	if len(out.CommonPrefixes) > 0 || len(out.Contents) > 0 {
 		return &dir{
 			s3cl:   s3cl,
 			bucket: bucket,
@@ -169,19 +182,6 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 			},
 		}, nil
 	}
-
-	if len(out.Contents) != 0 &&
-		out.Contents[0] != nil &&
-		out.Contents[0].Key != nil &&
-		*out.Contents[0].Key == name {
-		return &fileInfo{
-			name:    name,
-			size:    derefInt64(out.Contents[0].Size),
-			mode:    0,
-			modTime: derefTime(out.Contents[0].LastModified),
-		}, nil
-	}
-
 	return nil, fs.ErrNotExist
 }
 
