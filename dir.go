@@ -1,6 +1,7 @@
 package s3fs
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -9,21 +10,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 var _ fs.ReadDirFile = (*dir)(nil)
 
 type dir struct {
 	fileInfo
-	s3cl   s3iface.S3API
-	bucket string
-	marker *string
-	done   bool
-	buf    []fs.DirEntry
-	dirs   map[dirEntry]bool
+	context context.Context
+	s3Api   S3Api
+	bucket  string
+	marker  *string
+	done    bool
+	buf     []fs.DirEntry
+	dirs    map[dirEntry]bool
 }
 
 func (d *dir) Stat() (fs.FileInfo, error) {
@@ -105,7 +106,7 @@ func (d *dir) readNext() error {
 		name += "/"
 	}
 
-	out, err := d.s3cl.ListObjects(&s3.ListObjectsInput{
+	out, err := d.s3Api.ListObjects(d.context, &s3.ListObjectsInput{
 		Bucket:    &d.bucket,
 		Delimiter: aws.String("/"),
 		Prefix:    &name,
@@ -124,14 +125,14 @@ func (d *dir) readNext() error {
 	}
 
 	d.marker = out.NextMarker
-	d.done = out.IsTruncated != nil && !(*out.IsTruncated)
+	d.done = !out.IsTruncated
 
 	if d.dirs == nil {
 		d.dirs = make(map[dirEntry]bool)
 	}
 
 	for _, p := range out.CommonPrefixes {
-		if p == nil || p.Prefix == nil {
+		if p.Prefix == nil {
 			continue
 		}
 
@@ -148,14 +149,14 @@ func (d *dir) readNext() error {
 	}
 
 	for _, o := range out.Contents {
-		if o == nil || o.Key == nil {
+		if o.Key == nil {
 			continue
 		}
 
 		d.buf = append(d.buf, dirEntry{
 			fileInfo: fileInfo{
 				name:    path.Base(*o.Key),
-				size:    derefInt64(o.Size),
+				size:    o.Size,
 				modTime: derefTime(o.LastModified),
 			},
 		})
