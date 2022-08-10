@@ -99,7 +99,10 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 	}
 
 	return &file{
-		ReadCloser: out.Body,
+		cl:         f.cl,
+		bucket:     f.bucket,
+		name:       name,
+		realReader: out.Body,
 		stat:       statFunc,
 	}, nil
 }

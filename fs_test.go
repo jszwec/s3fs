@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -42,6 +43,186 @@ var (
 func TestMain(m *testing.M) {
 	flag.Parse()
 	os.Exit(m.Run())
+}
+
+func TestSeeker(t *testing.T) {
+	s3cl := newClient(t)
+
+	const testFile = "file.txt"
+	content := []byte("content")
+
+	createBucket(t, s3cl, *bucket)
+	cleanBucket(t, s3cl, *bucket)
+
+	writeFile(t, s3cl, *bucket, testFile, content)
+
+	t.Cleanup(func() {
+		cleanBucket(t, s3cl, *bucket)
+
+		t.Log("test stats:")
+		t.Log("ListObjects calls:", atomic.LoadInt64(&listC))
+		t.Log("GetObject calls:", atomic.LoadInt64(&getC))
+	})
+
+	t.Run("seek once", func(t *testing.T) {
+		fixtures := []struct {
+			desc     string
+			offset   int64
+			whence   int
+			expected int64
+			err      error
+		}{
+			{"whence SeekStart ", 2, io.SeekStart, 2, nil},
+			{"whence SeekCurrent", 4, io.SeekCurrent, 4, nil},
+			{"whence SeekEnd", -1, io.SeekEnd, int64(len(content)) - 1, nil},
+			{"whence SeekEnd", 4, 3, 0, fmt.Errorf("unknown 'whence': 3")},
+		}
+
+		for _, f := range fixtures {
+			f := f
+			t.Run(f.desc, func(t *testing.T) {
+				testFs := s3fs.New(s3cl, *bucket)
+				data, err := testFs.Open(testFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				actual, err := data.(io.Seeker).Seek(f.offset, f.whence)
+				if err != nil && err.Error() != f.err.Error() {
+					t.Fatal(err)
+				}
+
+				if actual != f.expected {
+					t.Errorf("Expected %d, got %d", f.expected, actual)
+				}
+
+			})
+		}
+	})
+
+	t.Run("seek once returns aws request error", func(t *testing.T) {
+		fixtures := []struct {
+			desc   string
+			offset int64
+			whence int
+		}{
+			{"seek before beginning", -1, io.SeekCurrent},
+			{"seek after end", int64(len(content)) + 1, io.SeekStart},
+			{"seek exactly to end", 0, io.SeekEnd},
+		}
+
+		for _, f := range fixtures {
+			f := f
+			t.Run(f.desc, func(t *testing.T) {
+				testFs := s3fs.New(s3cl, *bucket)
+				data, err := testFs.Open(testFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				_, err = data.(io.Seeker).Seek(f.offset, f.whence)
+				if err == nil {
+					t.Fatal(err)
+				}
+
+				errorType, ok := err.(awserr.RequestFailure)
+
+				if !ok {
+					t.Errorf("Expected awserr.RequestFailure, got %v", errorType)
+				}
+
+			})
+		}
+	})
+
+	t.Run("seek from other starting position", func(t *testing.T) {
+		fixtures := []struct {
+			desc          string
+			initialOffset int
+			offset        int64
+			whence        int
+			expected      int64
+		}{
+			{"whence SeekStart", 3, 2, io.SeekStart, 2},
+			{"whence SeekCurrent", 3, 3, io.SeekCurrent, 6},
+			{"whence SeekEnd", 3, -1, io.SeekEnd, int64(len(content)) - 1},
+		}
+
+		for _, f := range fixtures {
+			f := f
+			t.Run(f.desc, func(t *testing.T) {
+				testFs := s3fs.New(s3cl, *bucket)
+				data, err := testFs.Open(testFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				readBuffer := make([]byte, f.initialOffset)
+				readBytes, err := data.Read(readBuffer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if readBytes != f.initialOffset {
+					t.Errorf("Read failed during test setup")
+				}
+
+				actual, err := data.(io.Seeker).Seek(f.offset, f.whence)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if actual != f.expected {
+					t.Errorf("Expected %d, got %d", f.expected, actual)
+				}
+
+			})
+		}
+	})
+
+	t.Run("seek then read", func(t *testing.T) {
+		fixtures := []struct {
+			desc      string
+			readBytes int
+			offset    int64
+			whence    int
+			expected  []byte
+		}{
+			{"whence SeekStart", 3, 2, io.SeekStart, content[2:5]},
+			{"whence SeekStart overflow", 3, 5, io.SeekStart, content[5:7]},
+			{"whence SeekCurrent", 3, 4, io.SeekCurrent, content[4:7]},
+			{"whence SeekEnd", 3, -3, io.SeekEnd, content[len(content)-3:]},
+		}
+
+		for _, f := range fixtures {
+			f := f
+			t.Run(f.desc, func(t *testing.T) {
+				testFs := s3fs.New(s3cl, *bucket)
+				data, err := testFs.Open(testFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				_, err = data.(io.Seeker).Seek(f.offset, f.whence)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				readBuffer := make([]byte, f.readBytes)
+				readBytes, err := data.Read(readBuffer)
+				if readBytes != len(f.expected) {
+					t.Errorf("Read returned unexpected number of bytes")
+				}
+				if err != nil && err != io.EOF {
+					t.Fatal(err)
+				}
+				if bytes.Compare(readBuffer[:readBytes], f.expected) != 0 {
+					t.Errorf("Expected %s, got %s", string(f.expected), string(readBuffer))
+				}
+
+			})
+		}
+	})
+
 }
 
 func TestFS(t *testing.T) {
