@@ -18,13 +18,49 @@ var (
 )
 
 type file struct {
-	cl         s3iface.S3API
-	bucket     string
-	name       string
-	realReader io.ReadCloser
-	stat       func() (fs.FileInfo, error)
+	cl     s3iface.S3API
+	bucket string
+	name   string
 
+	realReader      io.ReadCloser
+	stat            func() (fs.FileInfo, error)
 	currentPosition int64
+}
+
+func NewFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
+	out, err := cl.GetObject(&s3.GetObjectInput{
+		Key:    &name,
+		Bucket: &bucket,
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	statFunc := func() (fs.FileInfo, error) {
+		return stat(cl, bucket, name)
+	}
+
+	if out.ContentLength != nil && out.LastModified != nil {
+		// if we got all the information from GetObjectOutput
+		// then we can cache fileinfo instead of making
+		// another call in case Stat is called.
+		statFunc = func() (fs.FileInfo, error) {
+			return &fileInfo{
+				name:    path.Base(name),
+				size:    *out.ContentLength,
+				modTime: *out.LastModified,
+			}, nil
+		}
+	}
+
+	return &file{
+		cl:         cl,
+		bucket:     bucket,
+		name:       name,
+		realReader: out.Body,
+		stat:       statFunc,
+	}, nil
 }
 
 func (f *file) Read(p []byte) (int, error) {

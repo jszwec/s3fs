@@ -4,13 +4,11 @@ package s3fs
 
 import (
 	"errors"
-	"io/fs"
-	"path"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
+	"io/fs"
 )
 
 var (
@@ -53,10 +51,7 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 		return openDir(f.cl, f.bucket, name)
 	}
 
-	out, err := f.cl.GetObject(&s3.GetObjectInput{
-		Key:    &name,
-		Bucket: &f.bucket,
-	})
+	file, err := NewFile(f.cl, f.bucket, name)
 
 	if err != nil {
 		if isNotFoundErr(err) {
@@ -81,30 +76,7 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 		}
 	}
 
-	statFunc := func() (fs.FileInfo, error) {
-		return stat(f.cl, f.bucket, name)
-	}
-
-	if out.ContentLength != nil && out.LastModified != nil {
-		// if we got all the information from GetObjectOutput
-		// then we can cache fileinfo instead of making
-		// another call in case Stat is called.
-		statFunc = func() (fs.FileInfo, error) {
-			return &fileInfo{
-				name:    path.Base(name),
-				size:    *out.ContentLength,
-				modTime: *out.LastModified,
-			}, nil
-		}
-	}
-
-	return &file{
-		cl:         f.cl,
-		bucket:     f.bucket,
-		name:       name,
-		realReader: out.Body,
-		stat:       statFunc,
-	}, nil
+	return file, nil
 }
 
 // Stat implements fs.StatFS.
