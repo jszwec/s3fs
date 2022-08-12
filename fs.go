@@ -4,11 +4,12 @@ package s3fs
 
 import (
 	"errors"
+	"io/fs"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"io/fs"
 )
 
 var (
@@ -51,7 +52,7 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 		return openDir(f.cl, f.bucket, name)
 	}
 
-	file, err := NewFile(f.cl, f.bucket, name)
+	file, err := openFile(f.cl, f.bucket, name)
 
 	if err != nil {
 		if isNotFoundErr(err) {

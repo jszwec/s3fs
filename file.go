@@ -1,14 +1,17 @@
 package s3fs
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"io/ioutil"
+	"path"
+	"time"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"io"
-	"io/fs"
-	"path"
-	"time"
 )
 
 var (
@@ -22,12 +25,12 @@ type file struct {
 	bucket string
 	name   string
 
-	realReader      io.ReadCloser
-	stat            func() (fs.FileInfo, error)
-	currentPosition int64
+	io.ReadCloser
+	stat   func() (fs.FileInfo, error)
+	offset int64
 }
 
-func NewFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
+func openFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
 	out, err := cl.GetObject(&s3.GetObjectInput{
 		Key:    &name,
 		Bucket: &bucket,
@@ -58,60 +61,78 @@ func NewFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
 		cl:         cl,
 		bucket:     bucket,
 		name:       name,
-		realReader: out.Body,
+		ReadCloser: out.Body,
 		stat:       statFunc,
+		offset:     0,
 	}, nil
 }
 
 func (f *file) Read(p []byte) (int, error) {
-	n, err := f.realReader.Read(p)
-	f.currentPosition += int64(n)
+	n, err := f.Read(p)
+	f.offset += int64(n)
 	return n, err
 }
 
-func (f *file) Close() error {
-	return f.realReader.Close()
-}
-
 func (f *file) Seek(offset int64, whence int) (int64, error) {
-	newPosition := f.currentPosition
+	newOffset := f.offset
+
+	stat, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := stat.Size()
+
 	switch whence {
 	case io.SeekStart:
-		newPosition = offset
+		newOffset = offset
 	case io.SeekCurrent:
-		newPosition += offset
+		newOffset += offset
 	case io.SeekEnd:
-		stat, err := f.Stat()
-		if err != nil {
-			return 0, err
-		}
-		newPosition = stat.Size() + offset
+		newOffset = size + offset
 	default:
-		return 0, fmt.Errorf("unknown 'whence': %d", whence)
+		return f.offset, errors.New("s3fs.file.Seek: invalid whence")
 	}
+
 	// If the position has not moved, there is no need to make a new query
-	if f.currentPosition == newPosition {
-		return newPosition, nil
+	if f.offset == newOffset {
+		return newOffset, nil
+	}
+
+	if newOffset < 0 {
+		return f.offset, errors.New("s3fs.file.Seek: seeked to a negative position")
+	}
+	if newOffset > size {
+		return f.offset, errors.New("s3fs.file.Seek: seeked to a position exceeding size")
+	}
+	if newOffset == size {
+		f.ReadCloser = ioutil.NopCloser(eofReader{})
+		f.offset = newOffset
+		return f.offset, nil
+	}
+
+	err = f.Close()
+	if err != nil {
+		return f.offset, err
 	}
 
 	rawObject, err := f.cl.GetObject(
 		&s3.GetObjectInput{
 			Bucket: aws.String(f.bucket),
 			Key:    aws.String(f.name),
-			Range:  aws.String(fmt.Sprintf("bytes=%d-", newPosition)),
+			Range:  aws.String(fmt.Sprintf("bytes=%d-", newOffset)),
 		})
 
 	if err != nil {
-		return f.currentPosition, err
+		return f.offset, err
 	}
 
-	f.currentPosition = newPosition
-	f.realReader = rawObject.Body
+	f.offset = newOffset
+	f.ReadCloser = rawObject.Body
 
-	return f.currentPosition, nil
+	return f.offset, nil
 }
 
-func (f *file) Stat() (fs.FileInfo, error) { return f.stat() }
+func (f file) Stat() (fs.FileInfo, error) { return f.stat() }
 
 type fileInfo struct {
 	name    string
@@ -126,3 +147,7 @@ func (fi fileInfo) Mode() fs.FileMode  { return fi.mode }
 func (fi fileInfo) ModTime() time.Time { return fi.modTime }
 func (fi fileInfo) IsDir() bool        { return fi.mode.IsDir() }
 func (fi fileInfo) Sys() interface{}   { return nil }
+
+type eofReader struct{}
+
+func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
