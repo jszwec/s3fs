@@ -68,7 +68,7 @@ func openFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
 }
 
 func (f *file) Read(p []byte) (int, error) {
-	n, err := f.Read(p)
+	n, err := f.ReadCloser.Read(p)
 	f.offset += int64(n)
 	return n, err
 }
@@ -90,7 +90,7 @@ func (f *file) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekEnd:
 		newOffset = size + offset
 	default:
-		return f.offset, errors.New("s3fs.file.Seek: invalid whence")
+		return 0, errors.New("s3fs.file.Seek: invalid whence")
 	}
 
 	// If the position has not moved, there is no need to make a new query
@@ -99,12 +99,9 @@ func (f *file) Seek(offset int64, whence int) (int64, error) {
 	}
 
 	if newOffset < 0 {
-		return f.offset, errors.New("s3fs.file.Seek: seeked to a negative position")
+		return 0, errors.New("s3fs.file.Seek: seeked to a negative position")
 	}
-	if newOffset > size {
-		return f.offset, errors.New("s3fs.file.Seek: seeked to a position exceeding size")
-	}
-	if newOffset == size {
+	if newOffset >= size {
 		f.ReadCloser = ioutil.NopCloser(eofReader{})
 		f.offset = newOffset
 		return f.offset, nil

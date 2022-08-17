@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -70,12 +69,25 @@ func TestSeeker(t *testing.T) {
 			offset   int64
 			whence   int
 			expected int64
-			err      error
 		}{
-			{"whence SeekStart ", 2, io.SeekStart, 2, nil},
-			{"whence SeekCurrent", 4, io.SeekCurrent, 4, nil},
-			{"whence SeekEnd", -1, io.SeekEnd, int64(len(content)) - 1, nil},
-			{"whence SeekEnd", 4, 3, 0, fmt.Errorf("unknown 'whence': 3")},
+			{
+				desc:     "whence SeekStart ",
+				offset:   2,
+				whence:   io.SeekStart,
+				expected: 2,
+			},
+			{
+				desc:     "whence SeekCurrent",
+				offset:   4,
+				whence:   io.SeekCurrent,
+				expected: 4,
+			},
+			{
+				desc:     "whence SeekEnd",
+				offset:   -1,
+				whence:   io.SeekEnd,
+				expected: int64(len(content)) - 1,
+			},
 		}
 
 		for _, f := range fixtures {
@@ -88,7 +100,7 @@ func TestSeeker(t *testing.T) {
 				}
 
 				actual, err := data.(io.Seeker).Seek(f.offset, f.whence)
-				if err != nil && err.Error() != f.err.Error() {
+				if err != nil {
 					t.Fatal(err)
 				}
 
@@ -100,15 +112,31 @@ func TestSeeker(t *testing.T) {
 		}
 	})
 
-	t.Run("seek once returns aws request error", func(t *testing.T) {
+	t.Run("seek with errors", func(t *testing.T) {
 		fixtures := []struct {
-			desc   string
-			offset int64
-			whence int
+			desc         string
+			offset       int64
+			whence       int
+			errorMessage string
 		}{
-			{"seek before beginning", -1, io.SeekCurrent},
-			{"seek after end", int64(len(content)) + 1, io.SeekStart},
-			{"seek exactly to end", 0, io.SeekEnd},
+			{
+				desc:         "seek before beginning with whence SeekCurrent",
+				offset:       -1,
+				whence:       io.SeekCurrent,
+				errorMessage: "s3fs.file.Seek: seeked to a negative position",
+			},
+			{
+				desc:         "seek before beginning with whence SeekStart",
+				offset:       -1,
+				whence:       io.SeekStart,
+				errorMessage: "s3fs.file.Seek: seeked to a negative position",
+			},
+			{
+				desc:         "seek with invalid whence",
+				offset:       0,
+				whence:       3,
+				errorMessage: "s3fs.file.Seek: invalid whence",
+			},
 		}
 
 		for _, f := range fixtures {
@@ -122,15 +150,15 @@ func TestSeeker(t *testing.T) {
 
 				_, err = data.(io.Seeker).Seek(f.offset, f.whence)
 				if err == nil {
-					t.Fatal(err)
+					t.Errorf("Expected error after seeking to invalid position, got nil")
 				}
 
-				errorType, ok := err.(awserr.RequestFailure)
+				if errors.Is(err, errors.New(f.errorMessage)) {
 
-				if !ok {
-					t.Errorf("Expected awserr.RequestFailure, got %v", errorType)
 				}
-
+				if err.Error() != f.errorMessage {
+					t.Errorf("Expected %s, got %v", f.errorMessage, err)
+				}
 			})
 		}
 	})
@@ -143,9 +171,27 @@ func TestSeeker(t *testing.T) {
 			whence        int
 			expected      int64
 		}{
-			{"whence SeekStart", 3, 2, io.SeekStart, 2},
-			{"whence SeekCurrent", 3, 3, io.SeekCurrent, 6},
-			{"whence SeekEnd", 3, -1, io.SeekEnd, int64(len(content)) - 1},
+			{
+				desc:          "whence SeekStart",
+				initialOffset: 3,
+				offset:        2,
+				whence:        io.SeekStart,
+				expected:      2,
+			},
+			{
+				desc:          "whence SeekCurrent",
+				initialOffset: 3,
+				offset:        3,
+				whence:        io.SeekCurrent,
+				expected:      6,
+			},
+			{
+				desc:          "whence SeekEnd",
+				initialOffset: 3,
+				offset:        -1,
+				whence:        io.SeekEnd,
+				expected:      int64(len(content)) - 1,
+			},
 		}
 
 		for _, f := range fixtures {
@@ -179,7 +225,7 @@ func TestSeeker(t *testing.T) {
 		}
 	})
 
-	t.Run("seek then read", func(t *testing.T) {
+	t.Run("seek then read not expecting EOF", func(t *testing.T) {
 		fixtures := []struct {
 			desc      string
 			readBytes int
@@ -187,10 +233,19 @@ func TestSeeker(t *testing.T) {
 			whence    int
 			expected  []byte
 		}{
-			{"whence SeekStart", 3, 2, io.SeekStart, content[2:5]},
-			{"whence SeekStart overflow", 3, 5, io.SeekStart, content[5:7]},
-			{"whence SeekCurrent", 3, 4, io.SeekCurrent, content[4:7]},
-			{"whence SeekEnd", 3, -3, io.SeekEnd, content[len(content)-3:]},
+			{
+				desc:      "whence SeekStart",
+				readBytes: 3,
+				offset:    2,
+				whence:    io.SeekStart,
+				expected:  content[2:5],
+			},
+			{
+				desc:      "whence SeekCurrent",
+				readBytes: 1,
+				offset:    1,
+				whence:    io.SeekCurrent, expected: []byte("o"),
+			},
 		}
 
 		for _, f := range fixtures {
@@ -212,7 +267,7 @@ func TestSeeker(t *testing.T) {
 				if readBytes != len(f.expected) {
 					t.Errorf("Read returned unexpected number of bytes")
 				}
-				if err != nil && err != io.EOF {
+				if err != nil {
 					t.Fatal(err)
 				}
 				if bytes.Compare(readBuffer[:readBytes], f.expected) != 0 {
@@ -222,7 +277,102 @@ func TestSeeker(t *testing.T) {
 			})
 		}
 	})
+	t.Run("seek then read expecting EOF", func(t *testing.T) {
+		fixtures := []struct {
+			desc      string
+			readBytes int
+			offset    int64
+			whence    int
+			expected  []byte
+		}{
+			{
+				desc:      "whence SeekStart",
+				readBytes: 3,
+				offset:    5,
+				whence:    io.SeekStart,
+				expected:  content[5:7],
+			},
+			{
+				desc:      "whence SeekCurrent",
+				readBytes: 3,
+				offset:    4,
+				whence:    io.SeekCurrent,
+				expected:  content[4:7],
+			},
+			{
+				desc:      "whence SeekEnd",
+				readBytes: 3,
+				offset:    -3,
+				whence:    io.SeekEnd,
+				expected:  content[len(content)-3:],
+			},
+			{
+				desc:      "zero offset and read more than fits the buffer",
+				readBytes: 100,
+				offset:    0,
+				whence:    io.SeekStart,
+				expected:  []byte("content"),
+			},
+			{
+				desc:      "whence SeekStart offset and read more than fits the buffer",
+				readBytes: 100,
+				offset:    1,
+				whence:    io.SeekStart,
+				expected:  []byte("ontent"),
+			},
+			{
+				desc:      "whence SeekCurrent offset and read more than fits the buffer",
+				readBytes: 100,
+				offset:    1,
+				whence:    io.SeekCurrent,
+				expected:  []byte("ontent"),
+			},
+			{
+				desc:      "whence SeekEnd to the end of the file and then read",
+				readBytes: 10,
+				offset:    0,
+				whence:    io.SeekEnd,
+				expected:  []byte(""),
+			},
+			{
+				desc:      "whence SeekEnd past the end of the file and then read",
+				readBytes: 10,
+				offset:    1,
+				whence:    io.SeekEnd,
+				expected:  []byte(""),
+			},
+		}
 
+		for _, f := range fixtures {
+			f := f
+			t.Run(f.desc, func(t *testing.T) {
+				// f.
+				testFs := s3fs.New(s3cl, *bucket)
+				data, err := testFs.Open(testFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				_, err = data.(io.Seeker).Seek(0, io.SeekEnd)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				readBuffer := make([]byte, 10)
+				readBytes, err := data.Read(readBuffer)
+				if readBytes != 0 {
+					t.Errorf("Read returned unexpected number of bytes, should have returned 0")
+				}
+				if err == nil {
+					t.Errorf("Expected error was io.EOF, got nil")
+				}
+				if err != io.EOF {
+					t.Fatal(err)
+				}
+
+			})
+		}
+	})
 }
 
 func TestFS(t *testing.T) {
