@@ -220,31 +220,106 @@ func TestSeeker(t *testing.T) {
 				if actual != f.expected {
 					t.Errorf("Expected %d, got %d", f.expected, actual)
 				}
-
 			})
 		}
 	})
 
-	t.Run("seek then read not expecting EOF", func(t *testing.T) {
+	t.Run("seek then read", func(t *testing.T) {
 		fixtures := []struct {
-			desc      string
-			readBytes int
-			offset    int64
-			whence    int
-			expected  []byte
+			desc         string
+			readBytes    int
+			offset       int64
+			whence       int
+			expected     []byte
+			expectingEOF bool
 		}{
 			{
-				desc:      "whence SeekStart",
-				readBytes: 3,
-				offset:    2,
-				whence:    io.SeekStart,
-				expected:  content[2:5],
+				desc:         "whence SeekStart",
+				readBytes:    3,
+				offset:       2,
+				whence:       io.SeekStart,
+				expected:     content[2:5],
+				expectingEOF: false,
 			},
 			{
-				desc:      "whence SeekCurrent",
-				readBytes: 1,
-				offset:    1,
-				whence:    io.SeekCurrent, expected: []byte("o"),
+				desc:         "whence SeekCurrent",
+				readBytes:    1,
+				offset:       1,
+				whence:       io.SeekCurrent,
+				expected:     []byte("o"),
+				expectingEOF: false,
+			},
+			{
+				desc:         "seek to end then read 0",
+				readBytes:    0,
+				offset:       0,
+				whence:       io.SeekEnd,
+				expected:     []byte(""),
+				expectingEOF: true,
+			},
+			{
+				desc:         "whence SeekStart with EOF",
+				readBytes:    2,
+				offset:       5,
+				whence:       io.SeekStart,
+				expected:     content[5:7],
+				expectingEOF: true,
+			},
+			{
+				desc:         "whence SeekCurrent with EOF",
+				readBytes:    3,
+				offset:       4,
+				whence:       io.SeekCurrent,
+				expected:     content[4:7],
+				expectingEOF: true,
+			},
+			{
+				desc:         "whence SeekEnd with EOF",
+				readBytes:    3,
+				offset:       -3,
+				whence:       io.SeekEnd,
+				expected:     content[len(content)-3:],
+				expectingEOF: true,
+			},
+			{
+				desc:         "zero offset and read more than fits the buffer",
+				readBytes:    100,
+				offset:       0,
+				whence:       io.SeekStart,
+				expected:     []byte("content"),
+				expectingEOF: true,
+			},
+			{
+				desc:         "whence SeekStart offset and read more than fits the buffer",
+				readBytes:    100,
+				offset:       1,
+				whence:       io.SeekStart,
+				expected:     []byte("ontent"),
+				expectingEOF: true,
+			},
+			{
+				desc:         "whence SeekCurrent offset and read more than fits the buffer",
+				readBytes:    100,
+				offset:       1,
+				whence:       io.SeekCurrent,
+				expected:     []byte("ontent"),
+				expectingEOF: true,
+			},
+			{
+				desc:         "whence SeekEnd to the end of the file and then read",
+				readBytes:    10,
+				offset:       0,
+				whence:       io.SeekEnd,
+				expected:     []byte(""),
+				expectingEOF: true,
+			},
+			{
+				desc:         "whence SeekEnd past the end of the file and then read",
+				readBytes:    10,
+				offset:       1,
+				whence:       io.SeekEnd,
+				expected:     []byte(""),
+				expectingEOF: true,
 			},
 		}
 
@@ -257,119 +332,191 @@ func TestSeeker(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				_, err = data.(io.Seeker).Seek(f.offset, f.whence)
-				if err != nil {
-					t.Fatal(err)
+				readSeekers := []struct {
+					desc   string
+					seeker io.ReadSeeker
+				}{
+					{desc: "file", seeker: data.(io.ReadSeeker)},
+					{desc: "bytes reader", seeker: bytes.NewReader(content)},
 				}
 
-				readBuffer := make([]byte, f.readBytes)
-				readBytes, err := data.Read(readBuffer)
-				if readBytes != len(f.expected) {
-					t.Errorf("Read returned unexpected number of bytes")
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				if bytes.Compare(readBuffer[:readBytes], f.expected) != 0 {
-					t.Errorf("Expected %s, got %s", string(f.expected), string(readBuffer))
-				}
+				for _, rs := range readSeekers {
+					rs := rs
+					t.Run(rs.desc, func(t *testing.T) {
+						_, err = rs.seeker.Seek(f.offset, f.whence)
+						if err != nil {
+							t.Fatal(err)
+						}
 
+						readBuffer := make([]byte, f.readBytes)
+						readBytes, err := rs.seeker.Read(readBuffer)
+						if readBytes != len(f.expected) {
+							t.Errorf("Read returned unexpected number of bytes")
+						}
+						if f.expectingEOF {
+							if err != nil && err != io.EOF {
+								/*
+									Expected error was either nil or io.EOF (depending on the reader), got something else
+
+									data.(io.ReadSeeker) is supposed to return io.EOF here
+									bytes.Reader is supposed to return nil here (unless there were 0 bytes read)
+								*/
+								t.Fatal(err)
+							}
+							newlyReadBytes, err := rs.seeker.Read(make([]byte, 0))
+							if newlyReadBytes != 0 {
+								t.Errorf("Read returned unexpected number of bytes: expected 0, got %d", newlyReadBytes)
+							}
+							if err == nil {
+								t.Errorf("Expected io.EOF error, got nil")
+							}
+							if err != io.EOF {
+								t.Fatal(err)
+							}
+						} else {
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+						if bytes.Compare(readBuffer[:readBytes], f.expected) != 0 {
+							t.Errorf("Expected %s, got %s", string(f.expected), string(readBuffer))
+						}
+					})
+				}
 			})
 		}
 	})
-	t.Run("seek then read expecting EOF", func(t *testing.T) {
+
+	t.Run("seek twice then read", func(t *testing.T) {
 		fixtures := []struct {
-			desc      string
-			readBytes int
-			offset    int64
-			whence    int
-			expected  []byte
+			desc         string
+			readBytes    int
+			firstOffset  int64
+			firstWhence  int
+			secondOffset int64
+			expected     []byte
+			expectingEOF bool
 		}{
 			{
-				desc:      "whence SeekStart",
-				readBytes: 3,
-				offset:    5,
-				whence:    io.SeekStart,
-				expected:  content[5:7],
+				desc:         "whence SeekStart",
+				readBytes:    2,
+				firstOffset:  1,
+				firstWhence:  io.SeekStart,
+				secondOffset: 2,
+				expected:     content[3:5],
+				expectingEOF: false,
 			},
 			{
-				desc:      "whence SeekCurrent",
-				readBytes: 3,
-				offset:    4,
-				whence:    io.SeekCurrent,
-				expected:  content[4:7],
+				desc:         "whence SeekCurrent",
+				readBytes:    1,
+				firstOffset:  2,
+				firstWhence:  io.SeekCurrent,
+				secondOffset: 3,
+				expected:     content[5:6],
+				expectingEOF: false,
 			},
 			{
-				desc:      "whence SeekEnd",
-				readBytes: 3,
-				offset:    -3,
-				whence:    io.SeekEnd,
-				expected:  content[len(content)-3:],
+				desc:         "whence SeekEnd",
+				readBytes:    2,
+				firstOffset:  -4,
+				firstWhence:  io.SeekEnd,
+				secondOffset: 1,
+				expected:     content[4:6],
+				expectingEOF: false,
 			},
 			{
-				desc:      "zero offset and read more than fits the buffer",
-				readBytes: 100,
-				offset:    0,
-				whence:    io.SeekStart,
-				expected:  []byte("content"),
+				desc:         "whence SeekStart with EOF",
+				readBytes:    5,
+				firstOffset:  1,
+				firstWhence:  io.SeekStart,
+				secondOffset: 2,
+				expected:     content[3:],
+				expectingEOF: true,
 			},
 			{
-				desc:      "whence SeekStart offset and read more than fits the buffer",
-				readBytes: 100,
-				offset:    1,
-				whence:    io.SeekStart,
-				expected:  []byte("ontent"),
+				desc:         "whence SeekCurrent with EOF",
+				readBytes:    2,
+				firstOffset:  2,
+				firstWhence:  io.SeekCurrent,
+				secondOffset: 3,
+				expected:     content[5:],
+				expectingEOF: true,
 			},
 			{
-				desc:      "whence SeekCurrent offset and read more than fits the buffer",
-				readBytes: 100,
-				offset:    1,
-				whence:    io.SeekCurrent,
-				expected:  []byte("ontent"),
-			},
-			{
-				desc:      "whence SeekEnd to the end of the file and then read",
-				readBytes: 10,
-				offset:    0,
-				whence:    io.SeekEnd,
-				expected:  []byte(""),
-			},
-			{
-				desc:      "whence SeekEnd past the end of the file and then read",
-				readBytes: 10,
-				offset:    1,
-				whence:    io.SeekEnd,
-				expected:  []byte(""),
+				desc:         "whence SeekEnd with EOF",
+				readBytes:    7,
+				firstOffset:  -5,
+				firstWhence:  io.SeekEnd,
+				secondOffset: 1,
+				expected:     content[3:],
+				expectingEOF: true,
 			},
 		}
 
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				// f.
 				testFs := s3fs.New(s3cl, *bucket)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
 				}
 
-				_, err = data.(io.Seeker).Seek(0, io.SeekEnd)
-				if err != nil {
-					t.Fatal(err)
+				readSeekers := []struct {
+					desc   string
+					seeker io.ReadSeeker
+				}{
+					{desc: "file", seeker: data.(io.ReadSeeker)},
+					{desc: "bytes reader", seeker: bytes.NewReader(content)},
 				}
 
-				readBuffer := make([]byte, 10)
-				readBytes, err := data.Read(readBuffer)
-				if readBytes != 0 {
-					t.Errorf("Read returned unexpected number of bytes, should have returned 0")
-				}
-				if err == nil {
-					t.Errorf("Expected error was io.EOF, got nil")
-				}
-				if err != io.EOF {
-					t.Fatal(err)
-				}
+				for _, rs := range readSeekers {
+					rs := rs
+					t.Run(rs.desc, func(t *testing.T) {
+						_, err = rs.seeker.Seek(f.firstOffset, f.firstWhence)
+						if err != nil {
+							t.Fatal(err)
+						}
 
+						_, err = rs.seeker.Seek(f.secondOffset, io.SeekCurrent)
+						if err != nil {
+							t.Fatal(err)
+						}
+
+						readBuffer := make([]byte, f.readBytes)
+						readBytes, err := rs.seeker.Read(readBuffer)
+						if readBytes != len(f.expected) {
+							t.Errorf("Read returned unexpected number of bytes")
+						}
+						if f.expectingEOF {
+							if err != nil && err != io.EOF {
+								/*
+									Expected error was either nil or io.EOF (depending on the reader), got something else
+									data.(io.ReadSeeker) will return io.EOF here
+									bytes.Reader will return nil here (unless there were 0 bytes read)
+								*/
+								t.Fatal(err)
+							}
+							readBytes, err = rs.seeker.Read(make([]byte, 0))
+							if readBytes != 0 {
+								t.Errorf("Read returned unexpected number of bytes: expected 0, got %d", readBytes)
+							}
+							if err == nil {
+								t.Errorf("Expecter io.EOF error, got nil")
+							}
+							if err != io.EOF {
+								t.Fatal(err)
+							}
+						} else {
+							if err != nil {
+								t.Fatal(err)
+							}
+							if bytes.Compare(readBuffer[:readBytes], f.expected) != 0 {
+								t.Errorf("Expected %s, got %s", string(f.expected), string(readBuffer))
+							}
+						}
+					})
+				}
 			})
 		}
 	})

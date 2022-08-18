@@ -40,22 +40,7 @@ func openFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
 		return nil, err
 	}
 
-	statFunc := func() (fs.FileInfo, error) {
-		return stat(cl, bucket, name)
-	}
-
-	if out.ContentLength != nil && out.LastModified != nil {
-		// if we got all the information from GetObjectOutput
-		// then we can cache fileinfo instead of making
-		// another call in case Stat is called.
-		statFunc = func() (fs.FileInfo, error) {
-			return &fileInfo{
-				name:    path.Base(name),
-				size:    *out.ContentLength,
-				modTime: *out.LastModified,
-			}, nil
-		}
-	}
+	statFunc := getStatFunc(cl, bucket, name, *out, 0)
 
 	return &file{
 		cl:         cl,
@@ -65,6 +50,27 @@ func openFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
 		stat:       statFunc,
 		offset:     0,
 	}, nil
+}
+
+func getStatFunc(cl s3iface.S3API, bucket string, name string, s3ObjOutput s3.GetObjectOutput, offset int64) func() (fs.FileInfo, error) {
+	statFunc := func() (fs.FileInfo, error) {
+		return stat(cl, bucket, name)
+	}
+
+	if s3ObjOutput.ContentLength != nil && s3ObjOutput.LastModified != nil {
+		// if we got all the information from GetObjectOutput
+		// then we can cache fileinfo instead of making
+		// another call in case Stat is called.
+		statFunc = func() (fs.FileInfo, error) {
+			return &fileInfo{
+				name:    path.Base(name),
+				size:    *s3ObjOutput.ContentLength + offset,
+				modTime: *s3ObjOutput.LastModified,
+			}, nil
+		}
+	}
+
+	return statFunc
 }
 
 func (f *file) Read(p []byte) (int, error) {
@@ -101,15 +107,16 @@ func (f *file) Seek(offset int64, whence int) (int64, error) {
 	if newOffset < 0 {
 		return 0, errors.New("s3fs.file.Seek: seeked to a negative position")
 	}
-	if newOffset >= size {
-		f.ReadCloser = ioutil.NopCloser(eofReader{})
-		f.offset = newOffset
-		return f.offset, nil
-	}
 
 	err = f.Close()
 	if err != nil {
 		return f.offset, err
+	}
+
+	if newOffset >= size {
+		f.ReadCloser = ioutil.NopCloser(eofReader{})
+		f.offset = newOffset
+		return f.offset, nil
 	}
 
 	rawObject, err := f.cl.GetObject(
@@ -120,11 +127,12 @@ func (f *file) Seek(offset int64, whence int) (int64, error) {
 		})
 
 	if err != nil {
-		return f.offset, err
+		return 0, err
 	}
 
 	f.offset = newOffset
 	f.ReadCloser = rawObject.Body
+	f.stat = getStatFunc(f.cl, f.bucket, f.name, *rawObject, f.offset)
 
 	return f.offset, nil
 }
