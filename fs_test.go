@@ -63,6 +63,53 @@ func TestSeeker(t *testing.T) {
 		t.Log("GetObject calls:", atomic.LoadInt64(&getC))
 	})
 
+	t.Run("'s3fs.New' does not implement Seeker", func(t *testing.T) {
+		testFs := s3fs.New(s3cl, *bucket)
+		data, err := testFs.Open(testFile)
+
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, ok := data.(io.Seeker)
+
+		if ok {
+			t.Fatalf("Expected 'data' to not implement the Seeker interface")
+		}
+	})
+
+	t.Run("seek throws error if file changed", func(t *testing.T) {
+		const otherTestFile = "otherFile.txt"
+		originalContent := []byte("con")
+		changedContent := []byte("tent")
+
+		writeFile(t, s3cl, *bucket, otherTestFile, originalContent)
+
+		testFs := s3fs.NewSeekable(s3cl, *bucket)
+		data, err := testFs.Open(otherTestFile)
+
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := data.(io.Seeker).Seek(0, io.SeekEnd); err != nil {
+			t.Fatal(err)
+		}
+
+		deleteFile(t, s3cl, *bucket, otherTestFile)
+		writeFile(t, s3cl, *bucket, otherTestFile, changedContent)
+
+		_, err = data.(io.Seeker).Seek(0, io.SeekStart)
+
+		if err == nil {
+			t.Fatalf("Expected error, got nil")
+		}
+
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("seek once", func(t *testing.T) {
 		fixtures := []struct {
 			desc     string
@@ -93,7 +140,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.New(s3cl, *bucket)
+				testFs := s3fs.NewSeekable(s3cl, *bucket)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -105,7 +152,7 @@ func TestSeeker(t *testing.T) {
 				}
 
 				if actual != f.expected {
-					t.Errorf("Expected %d, got %d", f.expected, actual)
+					t.Fatalf("Expected %d, got %d", f.expected, actual)
 				}
 
 			})
@@ -142,7 +189,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.New(s3cl, *bucket)
+				testFs := s3fs.NewSeekable(s3cl, *bucket)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -150,14 +197,10 @@ func TestSeeker(t *testing.T) {
 
 				_, err = data.(io.Seeker).Seek(f.offset, f.whence)
 				if err == nil {
-					t.Errorf("Expected error after seeking to invalid position, got nil")
-				}
-
-				if errors.Is(err, errors.New(f.errorMessage)) {
-
+					t.Fatalf("Expected error after seeking to invalid position, got nil")
 				}
 				if err.Error() != f.errorMessage {
-					t.Errorf("Expected %s, got %v", f.errorMessage, err)
+					t.Fatalf("Expected %s, got %v", f.errorMessage, err)
 				}
 			})
 		}
@@ -197,7 +240,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.New(s3cl, *bucket)
+				testFs := s3fs.NewSeekable(s3cl, *bucket)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -209,7 +252,7 @@ func TestSeeker(t *testing.T) {
 					t.Fatal(err)
 				}
 				if readBytes != f.initialOffset {
-					t.Errorf("Read failed during test setup")
+					t.Fatalf("Read failed during test setup")
 				}
 
 				actual, err := data.(io.Seeker).Seek(f.offset, f.whence)
@@ -218,7 +261,7 @@ func TestSeeker(t *testing.T) {
 				}
 
 				if actual != f.expected {
-					t.Errorf("Expected %d, got %d", f.expected, actual)
+					t.Fatalf("Expected %d, got %d", f.expected, actual)
 				}
 			})
 		}
@@ -326,7 +369,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.New(s3cl, *bucket)
+				testFs := s3fs.NewSeekable(s3cl, *bucket)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -348,38 +391,26 @@ func TestSeeker(t *testing.T) {
 							t.Fatal(err)
 						}
 
-						readBuffer := make([]byte, f.readBytes)
-						readBytes, err := rs.seeker.Read(readBuffer)
-						if readBytes != len(f.expected) {
-							t.Errorf("Read returned unexpected number of bytes")
+						var buf bytes.Buffer
+						_, err := io.CopyN(&buf, rs.seeker, int64(f.readBytes))
+						if err != nil && !errors.Is(err, io.EOF) {
+							t.Fatal(err)
+						}
+
+						if buf.String() != string(f.expected) {
+							t.Errorf("expected %s, got %s", f.expected, buf.String())
 						}
 						if f.expectingEOF {
-							if err != nil && err != io.EOF {
-								/*
-									Expected error was either nil or io.EOF (depending on the reader), got something else
-
-									data.(io.ReadSeeker) is supposed to return io.EOF here
-									bytes.Reader is supposed to return nil here (unless there were 0 bytes read)
-								*/
-								t.Fatal(err)
-							}
 							newlyReadBytes, err := rs.seeker.Read(make([]byte, 0))
 							if newlyReadBytes != 0 {
-								t.Errorf("Read returned unexpected number of bytes: expected 0, got %d", newlyReadBytes)
+								t.Fatalf("Read returned unexpected number of bytes: expected 0, got %d", newlyReadBytes)
 							}
 							if err == nil {
-								t.Errorf("Expected io.EOF error, got nil")
+								t.Fatalf("Expected io.EOF error, got nil")
 							}
-							if err != io.EOF {
+							if !errors.Is(err, io.EOF) {
 								t.Fatal(err)
 							}
-						} else {
-							if err != nil {
-								t.Fatal(err)
-							}
-						}
-						if bytes.Compare(readBuffer[:readBytes], f.expected) != 0 {
-							t.Errorf("Expected %s, got %s", string(f.expected), string(readBuffer))
 						}
 					})
 				}
@@ -456,7 +487,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.New(s3cl, *bucket)
+				testFs := s3fs.NewSeekable(s3cl, *bucket)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -483,36 +514,25 @@ func TestSeeker(t *testing.T) {
 							t.Fatal(err)
 						}
 
-						readBuffer := make([]byte, f.readBytes)
-						readBytes, err := rs.seeker.Read(readBuffer)
-						if readBytes != len(f.expected) {
-							t.Errorf("Read returned unexpected number of bytes")
+						var buf bytes.Buffer
+						_, err := io.CopyN(&buf, rs.seeker, int64(f.readBytes))
+						if err != nil && !errors.Is(err, io.EOF) {
+							t.Fatal(err)
+						}
+
+						if buf.String() != string(f.expected) {
+							t.Errorf("expected %s, got %s", f.expected, buf.String())
 						}
 						if f.expectingEOF {
-							if err != nil && err != io.EOF {
-								/*
-									Expected error was either nil or io.EOF (depending on the reader), got something else
-									data.(io.ReadSeeker) will return io.EOF here
-									bytes.Reader will return nil here (unless there were 0 bytes read)
-								*/
-								t.Fatal(err)
-							}
-							readBytes, err = rs.seeker.Read(make([]byte, 0))
-							if readBytes != 0 {
-								t.Errorf("Read returned unexpected number of bytes: expected 0, got %d", readBytes)
+							newlyReadBytes, err := rs.seeker.Read(make([]byte, 0))
+							if newlyReadBytes != 0 {
+								t.Fatalf("Read returned unexpected number of bytes: expected 0, got %d", newlyReadBytes)
 							}
 							if err == nil {
-								t.Errorf("Expecter io.EOF error, got nil")
+								t.Fatalf("Expected io.EOF error, got nil")
 							}
-							if err != io.EOF {
+							if !errors.Is(err, io.EOF) {
 								t.Fatal(err)
-							}
-						} else {
-							if err != nil {
-								t.Fatal(err)
-							}
-							if bytes.Compare(readBuffer[:readBytes], f.expected) != 0 {
-								t.Errorf("Expected %s, got %s", string(f.expected), string(readBuffer))
 							}
 						}
 					})
@@ -1311,8 +1331,20 @@ func writeFile(t *testing.T, cl s3iface.S3API, bucket, name string, data []byte)
 
 	uploader := s3manager.NewUploaderWithClient(cl)
 	_, err := uploader.Upload(&s3manager.UploadInput{
-		Body:   strings.NewReader("content"),
+		Body:   strings.NewReader(string(data)),
 		Bucket: &bucket,
+		Key:    &name,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func deleteFile(t *testing.T, cl s3iface.S3API, bucket, name string) {
+	t.Helper()
+
+	_, err := cl.DeleteObject(&s3.DeleteObjectInput{
+		Bucket: aws.String(bucket),
 		Key:    &name,
 	})
 	if err != nil {

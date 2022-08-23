@@ -26,15 +26,28 @@ var errNotDir = errors.New("not a dir")
 // by using prefixes and delims ("/"). Because directories are simulated, ModTime
 // is always a default Time value (IsZero returns true).
 type S3FS struct {
-	cl     s3iface.S3API
-	bucket string
+	cl       s3iface.S3API
+	bucket   string
+	seekable bool
 }
 
 // New returns a new filesystem that works on the specified bucket.
 func New(cl s3iface.S3API, bucket string) *S3FS {
 	return &S3FS{
-		cl:     cl,
-		bucket: bucket,
+		cl:       cl,
+		bucket:   bucket,
+		seekable: false,
+	}
+}
+
+// NewSeekable returns a new filesystem that works on the specified bucket, with Seeker interface implemented.
+//
+// Files opened with this fs might produce fs.ErrNotExist when calling seek
+func NewSeekable(cl s3iface.S3API, bucket string) *S3FS {
+	return &S3FS{
+		cl:       cl,
+		bucket:   bucket,
+		seekable: true,
 	}
 }
 
@@ -75,6 +88,10 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 			Path: name,
 			Err:  err,
 		}
+	}
+
+	if !f.seekable {
+		file = fileNoSeek{file}
 	}
 
 	return file, nil
@@ -185,3 +202,5 @@ func isNotFoundErr(err error) bool {
 	}
 	return false
 }
+
+type fileNoSeek struct{ fs.File }
