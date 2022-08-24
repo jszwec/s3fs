@@ -1,5 +1,4 @@
 // Package s3fs provides a S3 implementation for Go1.16 filesystem interface.
-//
 package s3fs
 
 import (
@@ -20,6 +19,17 @@ var (
 
 var errNotDir = errors.New("not a dir")
 
+// Option is a function that provides optional features to S3FS.
+type Option func(*S3FS)
+
+// WithReadSeeker enables Seek functionality on files opened with this fs.
+//
+// BUG(WilliamFrei): Seeking on S3 requires reopening the file at the specified
+// position. This can cause problems if the file changed between opening
+// and calling Seek. In that case, fs.ErrNotExist error is returned, which
+// has to be handled by the caller.
+func WithReadSeeker(fsys *S3FS) { fsys.readSeeker = true }
+
 // S3FS is a S3 filesystem implementation.
 //
 // S3 has a flat structure instead of a hierarchy. S3FS simulates directories
@@ -30,15 +40,6 @@ type S3FS struct {
 	bucket     string
 	readSeeker bool
 }
-
-type Option func(*S3FS)
-
-// WithReadSeeker enables Seek functionality on files opened with this fs
-//
-// BUG(WilliamFrei): Seeking on S3 requires reopening the file at the specified position.
-// This can cause problems if the file changed between opening and calling Seek.
-// In that case, a fs.ErrNotExist error is returned, which has to be handled by the caller.
-func WithReadSeeker(fsys *S3FS) { fsys.readSeeker = true }
 
 // New returns a new filesystem that works on the specified bucket.
 func New(cl s3iface.S3API, bucket string, opts ...Option) *S3FS {

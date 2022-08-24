@@ -100,13 +100,8 @@ func TestSeeker(t *testing.T) {
 		writeFile(t, s3cl, *bucket, otherTestFile, changedContent)
 
 		_, err = data.(io.Seeker).Seek(0, io.SeekStart)
-
-		if err == nil {
-			t.Fatalf("Expected error, got nil")
-		}
-
 		if !errors.Is(err, fs.ErrNotExist) {
-			t.Fatal(err)
+			t.Fatalf("want=%v; got %v", fs.ErrNotExist, err)
 		}
 	})
 

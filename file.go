@@ -3,14 +3,14 @@ package s3fs
 import (
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"net/http"
 	"path"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
@@ -116,13 +116,12 @@ func (f *file) Seek(offset int64, whence int) (int64, error) {
 		return 0, errors.New("s3fs.file.Seek: cannot seek. remote file has no etag")
 	}
 
-	err = f.Close()
-	if err != nil {
+	if err := f.Close(); err != nil {
 		return f.offset, err
 	}
 
 	if newOffset >= size {
-		f.ReadCloser = ioutil.NopCloser(eofReader{})
+		f.ReadCloser = io.NopCloser(eofReader{})
 		f.offset = newOffset
 		return f.offset, nil
 	}
