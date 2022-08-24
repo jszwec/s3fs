@@ -26,29 +26,32 @@ var errNotDir = errors.New("not a dir")
 // by using prefixes and delims ("/"). Because directories are simulated, ModTime
 // is always a default Time value (IsZero returns true).
 type S3FS struct {
-	cl       s3iface.S3API
-	bucket   string
-	seekable bool
+	cl         s3iface.S3API
+	bucket     string
+	readSeeker bool
 }
+
+type Option func(*S3FS)
+
+// WithReadSeeker enables Seek functionality on files opened with this fs
+//
+// BUG(WilliamFrei): Seeking on S3 requires reopening the file at the specified position.
+// This can cause problems if the file changed between opening and calling Seek.
+// In that case, a fs.ErrNotExist error is returned, which has to be handled by the caller.
+func WithReadSeeker(fsys *S3FS) { fsys.readSeeker = true }
 
 // New returns a new filesystem that works on the specified bucket.
-func New(cl s3iface.S3API, bucket string) *S3FS {
-	return &S3FS{
-		cl:       cl,
-		bucket:   bucket,
-		seekable: false,
+func New(cl s3iface.S3API, bucket string, opts ...Option) *S3FS {
+	fsys := &S3FS{
+		cl:     cl,
+		bucket: bucket,
 	}
-}
 
-// NewSeekable returns a new filesystem that works on the specified bucket, with Seeker interface implemented.
-//
-// Files opened with this fs might produce fs.ErrNotExist when calling seek
-func NewSeekable(cl s3iface.S3API, bucket string) *S3FS {
-	return &S3FS{
-		cl:       cl,
-		bucket:   bucket,
-		seekable: true,
+	for _, opt := range opts {
+		opt(fsys)
 	}
+
+	return fsys
 }
 
 // Open implements fs.FS.
@@ -90,7 +93,7 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 		}
 	}
 
-	if !f.seekable {
+	if !f.readSeeker {
 		file = fileNoSeek{file}
 	}
 

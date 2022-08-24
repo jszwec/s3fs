@@ -43,7 +43,7 @@ func openFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
 		return nil, err
 	}
 
-	statFunc := getStatFunc(cl, bucket, name, *out, 0)
+	statFunc := getStatFunc(cl, bucket, name, *out)
 
 	return &file{
 		cl:         cl,
@@ -56,7 +56,7 @@ func openFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
 	}, nil
 }
 
-func getStatFunc(cl s3iface.S3API, bucket string, name string, s3ObjOutput s3.GetObjectOutput, offset int64) func() (fs.FileInfo, error) {
+func getStatFunc(cl s3iface.S3API, bucket string, name string, s3ObjOutput s3.GetObjectOutput) func() (fs.FileInfo, error) {
 	statFunc := func() (fs.FileInfo, error) {
 		return stat(cl, bucket, name)
 	}
@@ -68,7 +68,7 @@ func getStatFunc(cl s3iface.S3API, bucket string, name string, s3ObjOutput s3.Ge
 		statFunc = func() (fs.FileInfo, error) {
 			return &fileInfo{
 				name:    path.Base(name),
-				size:    *s3ObjOutput.ContentLength + offset,
+				size:    *s3ObjOutput.ContentLength,
 				modTime: *s3ObjOutput.LastModified,
 			}, nil
 		}
@@ -136,16 +136,15 @@ func (f *file) Seek(offset int64, whence int) (int64, error) {
 		})
 
 	if err != nil {
-		err, ok := err.(awserr.RequestFailure)
-		if ok && err.StatusCode() == http.StatusPreconditionFailed {
-			return 0, fs.ErrNotExist
+		var requestFailureError awserr.RequestFailure
+		if errors.As(err, &requestFailureError) && requestFailureError.StatusCode() == http.StatusPreconditionFailed {
+			return 0, fmt.Errorf("s3fs.file.Seek: file has changed while seeking: %w", fs.ErrNotExist)
 		}
 		return 0, err
 	}
 
 	f.offset = newOffset
 	f.ReadCloser = rawObject.Body
-	f.stat = getStatFunc(f.cl, f.bucket, f.name, *rawObject, f.offset)
 
 	return f.offset, nil
 }

@@ -85,7 +85,7 @@ func TestSeeker(t *testing.T) {
 
 		writeFile(t, s3cl, *bucket, otherTestFile, originalContent)
 
-		testFs := s3fs.NewSeekable(s3cl, *bucket)
+		testFs := s3fs.New(s3cl, *bucket, s3fs.WithReadSeeker)
 		data, err := testFs.Open(otherTestFile)
 
 		if err != nil {
@@ -140,7 +140,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.NewSeekable(s3cl, *bucket)
+				testFs := s3fs.New(s3cl, *bucket, s3fs.WithReadSeeker)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -189,7 +189,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.NewSeekable(s3cl, *bucket)
+				testFs := s3fs.New(s3cl, *bucket, s3fs.WithReadSeeker)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -240,7 +240,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.NewSeekable(s3cl, *bucket)
+				testFs := s3fs.New(s3cl, *bucket, s3fs.WithReadSeeker)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -369,7 +369,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.NewSeekable(s3cl, *bucket)
+				testFs := s3fs.New(s3cl, *bucket, s3fs.WithReadSeeker)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
@@ -487,7 +487,7 @@ func TestSeeker(t *testing.T) {
 		for _, f := range fixtures {
 			f := f
 			t.Run(f.desc, func(t *testing.T) {
-				testFs := s3fs.NewSeekable(s3cl, *bucket)
+				testFs := s3fs.New(s3cl, *bucket, s3fs.WithReadSeeker)
 				data, err := testFs.Open(testFile)
 				if err != nil {
 					t.Fatal(err)
