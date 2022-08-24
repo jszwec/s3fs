@@ -5,7 +5,6 @@ package s3fs
 import (
 	"errors"
 	"io/fs"
-	"path"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -27,16 +26,32 @@ var errNotDir = errors.New("not a dir")
 // by using prefixes and delims ("/"). Because directories are simulated, ModTime
 // is always a default Time value (IsZero returns true).
 type S3FS struct {
-	cl     s3iface.S3API
-	bucket string
+	cl         s3iface.S3API
+	bucket     string
+	readSeeker bool
 }
 
+type Option func(*S3FS)
+
+// WithReadSeeker enables Seek functionality on files opened with this fs
+//
+// BUG(WilliamFrei): Seeking on S3 requires reopening the file at the specified position.
+// This can cause problems if the file changed between opening and calling Seek.
+// In that case, a fs.ErrNotExist error is returned, which has to be handled by the caller.
+func WithReadSeeker(fsys *S3FS) { fsys.readSeeker = true }
+
 // New returns a new filesystem that works on the specified bucket.
-func New(cl s3iface.S3API, bucket string) *S3FS {
-	return &S3FS{
+func New(cl s3iface.S3API, bucket string, opts ...Option) *S3FS {
+	fsys := &S3FS{
 		cl:     cl,
 		bucket: bucket,
 	}
+
+	for _, opt := range opts {
+		opt(fsys)
+	}
+
+	return fsys
 }
 
 // Open implements fs.FS.
@@ -53,10 +68,7 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 		return openDir(f.cl, f.bucket, name)
 	}
 
-	out, err := f.cl.GetObject(&s3.GetObjectInput{
-		Key:    &name,
-		Bucket: &f.bucket,
-	})
+	file, err := openFile(f.cl, f.bucket, name)
 
 	if err != nil {
 		if isNotFoundErr(err) {
@@ -81,27 +93,11 @@ func (f *S3FS) Open(name string) (fs.File, error) {
 		}
 	}
 
-	statFunc := func() (fs.FileInfo, error) {
-		return stat(f.cl, f.bucket, name)
+	if !f.readSeeker {
+		file = fileNoSeek{file}
 	}
 
-	if out.ContentLength != nil && out.LastModified != nil {
-		// if we got all the information from GetObjectOutput
-		// then we can cache fileinfo instead of making
-		// another call in case Stat is called.
-		statFunc = func() (fs.FileInfo, error) {
-			return &fileInfo{
-				name:    path.Base(name),
-				size:    *out.ContentLength,
-				modTime: *out.LastModified,
-			}, nil
-		}
-	}
-
-	return &file{
-		ReadCloser: out.Body,
-		stat:       statFunc,
-	}, nil
+	return file, nil
 }
 
 // Stat implements fs.StatFS.
@@ -209,3 +205,5 @@ func isNotFoundErr(err error) bool {
 	}
 	return false
 }
+
+type fileNoSeek struct{ fs.File }
