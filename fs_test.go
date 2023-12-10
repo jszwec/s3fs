@@ -2,6 +2,7 @@ package s3fs_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -16,19 +17,15 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/jszwec/s3fs"
-
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/jszwec/s3fs/v2"
 )
 
 var (
-	endpoint   = flag.String("endpoint", "localhost:4566", "s3 endpoint")
+	endpoint   = flag.String("endpoint", "http://localhost:4566", "s3 endpoint")
 	bucket     = flag.String("bucket", "test-github.com-jszwec-s3fs", "bucket name")
 	skipVerify = flag.Bool("skip-verify", true, "http insecure skip verify")
 )
@@ -45,7 +42,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestSeeker(t *testing.T) {
-	s3cl := newClient(t)
+	s3cl, cl := newClient(t)
 
 	const testFile = "file.txt"
 	content := []byte("content")
@@ -64,7 +61,7 @@ func TestSeeker(t *testing.T) {
 	})
 
 	t.Run("'s3fs.New' does not implement Seeker", func(t *testing.T) {
-		testFs := s3fs.New(s3cl, *bucket)
+		testFs := s3fs.New(cl, *bucket)
 		data, err := testFs.Open(testFile)
 
 		if err != nil {
@@ -538,7 +535,7 @@ func TestSeeker(t *testing.T) {
 }
 
 func TestFS(t *testing.T) {
-	s3cl := newClient(t)
+	s3cl, wrappedCl := newClient(t)
 
 	const testFile = "file.txt"
 
@@ -564,7 +561,7 @@ func TestFS(t *testing.T) {
 	cleanBucket(t, s3cl, *bucket)
 
 	t.Run("list empty bucket", func(t *testing.T) {
-		fi, err := s3fs.New(s3cl, *bucket).Open(".")
+		fi, err := s3fs.New(wrappedCl, *bucket).Open(".")
 		if err != nil {
 			t.Errorf("want err to be nil; got %v", err)
 		}
@@ -1053,10 +1050,10 @@ func TestFS(t *testing.T) {
 		desc string
 		s3fs *s3fs.S3FS
 	}{
-		{desc: "standard", s3fs: s3fs.New(s3cl, *bucket)},
-		{desc: "max keys = 1", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(1), S3API: s3cl}, *bucket)},
-		{desc: "max keys = 2", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(2), S3API: s3cl}, *bucket)},
-		{desc: "max keys = 3", s3fs: s3fs.New(&client{MaxKeys: aws.Int64(3), S3API: s3cl}, *bucket)},
+		{desc: "standard", s3fs: s3fs.New(wrappedCl, *bucket)},
+		{desc: "max keys = 1", s3fs: s3fs.New(&client{MaxKeys: ptr[int32](1), Client: wrappedCl}, *bucket)},
+		{desc: "max keys = 2", s3fs: s3fs.New(&client{MaxKeys: ptr[int32](2), Client: wrappedCl}, *bucket)},
+		{desc: "max keys = 3", s3fs: s3fs.New(&client{MaxKeys: ptr[int32](3), Client: wrappedCl}, *bucket)},
 	}
 
 	for _, f := range fixtures {
@@ -1262,40 +1259,44 @@ func TestDirRead(t *testing.T) {
 }
 
 type mockClient struct {
-	s3iface.S3API
+	s3fs.Client
 	outs []s3.ListObjectsOutput
 	i    int
 }
 
-func (c *mockClient) ListObjects(in *s3.ListObjectsInput) (*s3.ListObjectsOutput, error) {
+func (c *mockClient) ListObjects(ctx context.Context, in *s3.ListObjectsInput, _ ...func(*s3.Options)) (*s3.ListObjectsOutput, error) {
 	defer func() { c.i++ }()
 	if c.i < len(c.outs) {
 		return &c.outs[c.i], nil
 	}
 
 	return &s3.ListObjectsOutput{
-		IsTruncated: aws.Bool(false),
+		IsTruncated: ptr(false),
 	}, nil
 }
 
 func newListOutput(dirs, files []string) (out s3.ListObjectsOutput) {
 	for _, d := range dirs {
-		out.CommonPrefixes = append(out.CommonPrefixes, &s3.CommonPrefix{
-			Prefix: aws.String(d),
+		out.CommonPrefixes = append(out.CommonPrefixes, types.CommonPrefix{
+			Prefix: ptr(d),
 		})
 	}
 
 	for _, f := range files {
-		out.Contents = append(out.Contents, &s3.Object{
-			Key:          aws.String(f),
-			Size:         aws.Int64(0),
-			LastModified: aws.Time(time.Time{}),
+		out.Contents = append(out.Contents, types.Object{
+			Key:          ptr(f),
+			Size:         ptr[int64](0),
+			LastModified: ptr(time.Time{}),
 		})
 	}
 	return out
 }
 
-func newClient(t *testing.T) s3iface.S3API {
+type Client interface {
+	s3fs.Client
+}
+
+func newClient(t *testing.T) (*s3.Client, Client) {
 	t.Helper()
 
 	cl := &http.Client{
@@ -1306,26 +1307,27 @@ func newClient(t *testing.T) s3iface.S3API {
 		},
 	}
 
-	s, err := session.NewSession(
-		aws.NewConfig().
-			WithEndpoint(*endpoint).
-			WithRegion(region).
-			WithS3ForcePathStyle(true).
-			WithHTTPClient(cl).
-			WithCredentials(credentials.NewStaticCredentials(accessKeyID, secretKey, "")),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := s3.New(s3.Options{
+		BaseEndpoint: endpoint,
+		Credentials: aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			return aws.Credentials{
+				AccessKeyID:     accessKeyID,
+				SecretAccessKey: secretKey,
+			}, nil
+		}),
+		Region:       region,
+		UsePathStyle: true,
+		HTTPClient:   cl,
+	})
 
-	return &modTimeTruncateClient{&metricClient{s3.New(s)}}
+	return client, &modTimeTruncateClient{&metricClient{client}}
 }
 
-func writeFile(t *testing.T, cl s3iface.S3API, bucket, name string, data []byte) {
+func writeFile(t *testing.T, cl *s3.Client, bucket, name string, data []byte) {
 	t.Helper()
 
-	uploader := s3manager.NewUploaderWithClient(cl)
-	_, err := uploader.Upload(&s3manager.UploadInput{
+	uploader := manager.NewUploader(cl)
+	_, err := uploader.Upload(context.Background(), &s3.PutObjectInput{
 		Body:   strings.NewReader(string(data)),
 		Bucket: &bucket,
 		Key:    &name,
@@ -1335,47 +1337,54 @@ func writeFile(t *testing.T, cl s3iface.S3API, bucket, name string, data []byte)
 	}
 }
 
-func deleteFile(t *testing.T, cl s3iface.S3API, bucket, name string) {
+func deleteFile(t *testing.T, cl *s3.Client, bucket, name string) {
 	t.Helper()
 
-	_, err := cl.DeleteObject(&s3.DeleteObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    &name,
-	})
+	_, err := cl.DeleteObject(
+		context.Background(),
+		&s3.DeleteObjectInput{
+			Bucket: ptr(bucket),
+			Key:    &name,
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func createBucket(t *testing.T, cl s3iface.S3API, bucket string) {
+func createBucket(t *testing.T, cl *s3.Client, bucket string) {
 	t.Helper()
 
-	_, err := cl.CreateBucket(&s3.CreateBucketInput{
+	_, err := cl.CreateBucket(context.Background(), &s3.CreateBucketInput{
 		Bucket: &bucket,
 	})
 	if err != nil {
-		if awserr, ok := err.(awserr.Error); ok && awserr.Code() == s3.ErrCodeBucketAlreadyOwnedByYou {
+		var e *types.BucketAlreadyOwnedByYou
+		if errors.As(err, &e) {
 			return
 		}
 		t.Fatal(err)
 	}
 }
 
-func cleanBucket(t *testing.T, cl s3iface.S3API, bucket string) {
+func cleanBucket(t *testing.T, cl *s3.Client, bucket string) {
 	t.Helper()
 
-	out, err := cl.ListObjects(&s3.ListObjectsInput{
-		Bucket: aws.String(bucket),
-	})
+	out, err := cl.ListObjects(
+		context.Background(),
+		&s3.ListObjectsInput{
+			Bucket: ptr(bucket),
+		})
 	if err != nil {
 		t.Fatal("failed to delete bucket:", err)
 	}
 
 	for _, o := range out.Contents {
-		_, err := cl.DeleteObject(&s3.DeleteObjectInput{
-			Bucket: aws.String(bucket),
-			Key:    o.Key,
-		})
+		_, err := cl.DeleteObject(
+			context.Background(),
+			&s3.DeleteObjectInput{
+				Bucket: ptr(bucket),
+				Key:    o.Key,
+			})
 		if err != nil {
 			t.Error("failed to delete file:", err)
 		}
@@ -1390,33 +1399,33 @@ func envDefault(env, def string) string {
 }
 
 type client struct {
-	MaxKeys *int64
-	s3iface.S3API
+	MaxKeys *int32
+	s3fs.Client
 }
 
-func (c *client) ListObjects(in *s3.ListObjectsInput) (*s3.ListObjectsOutput, error) {
+func (c *client) ListObjects(ctx context.Context, in *s3.ListObjectsInput, _ ...func(*s3.Options)) (*s3.ListObjectsOutput, error) {
 	if c.MaxKeys != nil {
 		in.MaxKeys = c.MaxKeys
 	}
-	return c.S3API.ListObjects(in)
+	return c.Client.ListObjects(ctx, in)
 }
 
 type modTimeTruncateClient struct {
-	s3iface.S3API
+	Client
 }
 
 // Minio returns modTime that includes microseconds if data comes from ListObjects
 // while data coming from GetObject's modTimes are accurate down to seconds.
 // To make this test pass while using Minio we build this client that truncates
 // modTimes to Second.
-func (c *modTimeTruncateClient) ListObjects(in *s3.ListObjectsInput) (*s3.ListObjectsOutput, error) {
-	out, err := c.S3API.ListObjects(in)
+func (c *modTimeTruncateClient) ListObjects(ctx context.Context, in *s3.ListObjectsInput, _ ...func(*s3.Options)) (*s3.ListObjectsOutput, error) {
+	out, err := c.Client.ListObjects(context.Background(), in)
 	if err != nil {
 		return out, err
 	}
 
-	for _, o := range out.Contents {
-		o.LastModified = aws.Time(o.LastModified.Truncate(time.Second))
+	for i, o := range out.Contents {
+		out.Contents[i].LastModified = ptr(o.LastModified.Truncate(time.Second))
 	}
 	return out, err
 }
@@ -1428,15 +1437,19 @@ var (
 )
 
 type metricClient struct {
-	s3iface.S3API
+	Client
 }
 
-func (c *metricClient) ListObjects(in *s3.ListObjectsInput) (*s3.ListObjectsOutput, error) {
+func (c *metricClient) ListObjects(ctx context.Context, in *s3.ListObjectsInput, _ ...func(*s3.Options)) (*s3.ListObjectsOutput, error) {
 	atomic.AddInt64(&listC, 1)
-	return c.S3API.ListObjects(in)
+	return c.Client.ListObjects(ctx, in)
 }
 
-func (c *metricClient) GetObject(in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+func (c *metricClient) GetObject(ctx context.Context, in *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	atomic.AddInt64(&getC, 1)
-	return c.S3API.GetObject(in)
+	return c.Client.GetObject(context.Background(), in)
+}
+
+func ptr[T any](v T) *T {
+	return &v
 }

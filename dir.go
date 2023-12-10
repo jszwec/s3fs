@@ -1,6 +1,7 @@
 package s3fs
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -9,16 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 var _ fs.ReadDirFile = (*dir)(nil)
 
 type dir struct {
 	fileInfo
-	s3cl   s3iface.S3API
+	s3cl   Client
 	bucket string
 	marker *string
 	done   bool
@@ -105,12 +104,14 @@ func (d *dir) readNext() error {
 		name += "/"
 	}
 
-	out, err := d.s3cl.ListObjects(&s3.ListObjectsInput{
-		Bucket:    &d.bucket,
-		Delimiter: aws.String("/"),
-		Prefix:    &name,
-		Marker:    d.marker,
-	})
+	out, err := d.s3cl.ListObjects(
+		context.Background(),
+		&s3.ListObjectsInput{
+			Bucket:    &d.bucket,
+			Delimiter: ptr("/"),
+			Prefix:    &name,
+			Marker:    d.marker,
+		})
 	if err != nil {
 		return err
 	}
@@ -131,7 +132,7 @@ func (d *dir) readNext() error {
 	}
 
 	for _, p := range out.CommonPrefixes {
-		if p == nil || p.Prefix == nil {
+		if p.Prefix == nil {
 			continue
 		}
 
@@ -148,7 +149,7 @@ func (d *dir) readNext() error {
 	}
 
 	for _, o := range out.Contents {
-		if o == nil || o.Key == nil {
+		if o.Key == nil {
 			continue
 		}
 

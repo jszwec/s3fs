@@ -2,13 +2,13 @@
 package s3fs
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
+	"github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 var (
@@ -30,19 +30,28 @@ type Option func(*S3FS)
 // has to be handled by the caller.
 func WithReadSeeker(fsys *S3FS) { fsys.readSeeker = true }
 
+// Client wraps the s3 client methods that this package is using.
+// This interface may change in the future and should not be relied on by
+// packages using it.
+type Client interface {
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	ListObjects(ctx context.Context, params *s3.ListObjectsInput, optFns ...func(*s3.Options)) (*s3.ListObjectsOutput, error)
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+}
+
 // S3FS is a S3 filesystem implementation.
 //
 // S3 has a flat structure instead of a hierarchy. S3FS simulates directories
 // by using prefixes and delims ("/"). Because directories are simulated, ModTime
 // is always a default Time value (IsZero returns true).
 type S3FS struct {
-	cl         s3iface.S3API
+	cl         Client
 	bucket     string
 	readSeeker bool
 }
 
 // New returns a new filesystem that works on the specified bucket.
-func New(cl s3iface.S3API, bucket string, opts ...Option) *S3FS {
+func New(cl Client, bucket string, opts ...Option) *S3FS {
 	fsys := &S3FS{
 		cl:     cl,
 		bucket: bucket,
@@ -127,7 +136,7 @@ func (f *S3FS) ReadDir(name string) ([]fs.DirEntry, error) {
 	return d.ReadDir(-1)
 }
 
-func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
+func stat(s3cl Client, bucket, name string) (fs.FileInfo, error) {
 	if !fs.ValidPath(name) {
 		return nil, fs.ErrInvalid
 	}
@@ -143,10 +152,12 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 		}, nil
 	}
 
-	head, err := s3cl.HeadObject(&s3.HeadObjectInput{
-		Bucket: &bucket,
-		Key:    aws.String(name),
-	})
+	head, err := s3cl.HeadObject(
+		context.Background(),
+		&s3.HeadObjectInput{
+			Bucket: &bucket,
+			Key:    &name,
+		})
 	if err != nil {
 		if !isNotFoundErr(err) {
 			return nil, err
@@ -160,12 +171,14 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 		}, nil
 	}
 
-	out, err := s3cl.ListObjectsV2(&s3.ListObjectsV2Input{
-		Bucket:    &bucket,
-		Delimiter: aws.String("/"),
-		Prefix:    aws.String(name + "/"),
-		MaxKeys:   aws.Int64(1),
-	})
+	out, err := s3cl.ListObjects(
+		context.Background(),
+		&s3.ListObjectsInput{
+			Bucket:    &bucket,
+			Delimiter: ptr("/"),
+			Prefix:    ptr(name + "/"),
+			MaxKeys:   ptr[int32](1),
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +195,7 @@ func stat(s3cl s3iface.S3API, bucket, name string) (fs.FileInfo, error) {
 	return nil, fs.ErrNotExist
 }
 
-func openDir(s3cl s3iface.S3API, bucket, name string) (fs.ReadDirFile, error) {
+func openDir(s3cl Client, bucket, name string) (fs.ReadDirFile, error) {
 	fi, err := stat(s3cl, bucket, name)
 	if err != nil {
 		return nil, err
@@ -194,16 +207,18 @@ func openDir(s3cl s3iface.S3API, bucket, name string) (fs.ReadDirFile, error) {
 	return nil, errNotDir
 }
 
-var notFoundCodes = map[string]struct{}{
-	s3.ErrCodeNoSuchKey: {},
-	"NotFound":          {}, // localstack
-}
-
 func isNotFoundErr(err error) bool {
-	if aerr, ok := err.(awserr.Error); ok {
-		_, ok := notFoundCodes[aerr.Code()]
-		return ok
+	if e := new(types.NoSuchKey); errors.As(err, &e) {
+		return true
 	}
+
+	if e := new(http.ResponseError); errors.As(err, &e) {
+		// localstack workaround
+		if e.HTTPStatusCode() == 404 {
+			return true
+		}
+	}
+
 	return false
 }
 

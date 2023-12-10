@@ -1,6 +1,7 @@
 package s3fs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,11 +10,8 @@ import (
 	"path"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 var (
@@ -23,7 +21,7 @@ var (
 )
 
 type file struct {
-	cl     s3iface.S3API
+	cl     Client
 	bucket string
 	name   string
 
@@ -33,8 +31,8 @@ type file struct {
 	eTag   string
 }
 
-func openFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
-	out, err := cl.GetObject(&s3.GetObjectInput{
+func openFile(cl Client, bucket string, name string) (fs.File, error) {
+	out, err := cl.GetObject(context.Background(), &s3.GetObjectInput{
 		Key:    &name,
 		Bucket: &bucket,
 	})
@@ -56,7 +54,7 @@ func openFile(cl s3iface.S3API, bucket string, name string) (fs.File, error) {
 	}, nil
 }
 
-func getStatFunc(cl s3iface.S3API, bucket string, name string, s3ObjOutput s3.GetObjectOutput) func() (fs.FileInfo, error) {
+func getStatFunc(cl Client, bucket string, name string, s3ObjOutput s3.GetObjectOutput) func() (fs.FileInfo, error) {
 	statFunc := func() (fs.FileInfo, error) {
 		return stat(cl, bucket, name)
 	}
@@ -127,17 +125,19 @@ func (f *file) Seek(offset int64, whence int) (int64, error) {
 	}
 
 	rawObject, err := f.cl.GetObject(
+		context.Background(),
 		&s3.GetObjectInput{
-			Bucket:  aws.String(f.bucket),
-			Key:     aws.String(f.name),
-			Range:   aws.String(fmt.Sprintf("bytes=%d-", newOffset)),
-			IfMatch: aws.String(f.eTag),
+			Bucket:  &f.bucket,
+			Key:     &f.name,
+			Range:   ptr(fmt.Sprintf("bytes=%d-", newOffset)),
+			IfMatch: &f.eTag,
 		})
 
 	if err != nil {
-		var requestFailureError awserr.RequestFailure
-		if errors.As(err, &requestFailureError) && requestFailureError.StatusCode() == http.StatusPreconditionFailed {
-			return 0, fmt.Errorf("s3fs.file.Seek: file has changed while seeking: %w", fs.ErrNotExist)
+		if e := new(awshttp.ResponseError); errors.As(err, &e) {
+			if e.HTTPStatusCode() == http.StatusPreconditionFailed {
+				return 0, fmt.Errorf("s3fs.file.Seek: file has changed while seeking: %w", fs.ErrNotExist)
+			}
 		}
 		return 0, err
 	}
@@ -167,3 +167,7 @@ func (fi fileInfo) Sys() interface{}   { return nil }
 type eofReader struct{}
 
 func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+func ptr[T any](v T) *T {
+	return &v
+}

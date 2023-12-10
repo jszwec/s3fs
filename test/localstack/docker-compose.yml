@@ -3,7 +3,7 @@ version: '3.8'
 services:
   localstack:
     container_name: "localstack"
-    image: localstack/localstack
+    image: localstack/localstack:0.14.0
     network_mode: bridge
     ports:
       - "4566:4566"
