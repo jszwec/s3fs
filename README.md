@@ -7,9 +7,11 @@ prefixes and "/" delim. ModTime on directories is always zero value.
 
 # SDK Versions
 ```github.com/jszwec/s3fs``` uses aws sdk v1
+
 ```github.com/jszwec/s3fs/v2``` uses aws sdk v2
 
 
+# Example (SDK v1)
 ```go
 const bucket = "my-bucket"
 
